@@ -14,8 +14,8 @@ use crate::edit::RuleEdit;
 const CONFIG_DIR: &str = "renameant";
 const CONFIG_FILE: &str = "rules.json";
 
-/// What the file holds: the rules, and one on/off flag per rule in the same
-/// order. This is `RuleSet` plus the flags, flattened.
+/// What the file holds: the rules, and one on/off and one default flag per rule
+/// in the same order. This is `RuleSet` plus the flags, flattened.
 #[derive(Default, Serialize, Deserialize)]
 struct StoredRules {
     #[serde(default)]
@@ -23,6 +23,10 @@ struct StoredRules {
     /// A missing flag reads as on, so a hand-written file is not all off.
     #[serde(default)]
     enabled: Vec<bool>,
+    /// A missing flag reads as custom, so a file from before the default cards
+    /// existed gains them on the next start.
+    #[serde(default)]
+    builtin: Vec<bool>,
 }
 
 /// `$XDG_CONFIG_HOME/renameant/rules.json`, default
@@ -57,7 +61,11 @@ pub fn load(path: &Path) -> io::Result<Vec<RuleEdit>> {
         .iter()
         .enumerate()
         .map(|(at, rule)| {
-            RuleEdit::from_rule(rule, stored.enabled.get(at).copied().unwrap_or(true))
+            RuleEdit::from_rule(
+                rule,
+                stored.enabled.get(at).copied().unwrap_or(true),
+                stored.builtin.get(at).copied().unwrap_or(false),
+            )
         })
         .collect())
 }
@@ -67,6 +75,7 @@ pub fn save(path: &Path, edits: &[RuleEdit]) -> io::Result<()> {
     let stored = StoredRules {
         rules: edits.iter().map(RuleEdit::to_rule).collect(),
         enabled: edits.iter().map(|edit| edit.enabled).collect(),
+        builtin: edits.iter().map(|edit| edit.builtin).collect(),
     };
     let text = serde_json::to_string_pretty(&stored).map_err(io::Error::other)?;
     if let Some(parent) = path.parent() {

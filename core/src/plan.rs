@@ -355,7 +355,14 @@ mod tests {
 
         let plan = plan_dir(
             temp.path(),
-            vec![Rule::Sequence { start: 1, step: 1, pad: 2, target: Target::Stem }],
+            vec![Rule::Sequence {
+                start: 1,
+                step: 1,
+                pad: 2,
+                prefix: Vec::new(),
+                suffix: Vec::new(),
+                target: Target::Stem,
+            }],
         );
 
         assert_eq!(dst_of(&plan, "a.txt"), OsStr::new("01.txt"));
@@ -435,7 +442,14 @@ mod tests {
 
         let plan = plan_tree_dir(
             temp.path(),
-            vec![Rule::Sequence { start: 1, step: 1, pad: 2, target: Target::Stem }],
+            vec![Rule::Sequence {
+                start: 1,
+                step: 1,
+                pad: 2,
+                prefix: Vec::new(),
+                suffix: Vec::new(),
+                target: Target::Stem,
+            }],
         );
 
         // One counter over the tree, ordered by path: a.txt, then `sub`, then
@@ -476,7 +490,17 @@ mod tests {
                 }],
             ),
             ("case", vec![Rule::Case { style: CaseStyle::Lower, target: Target::Stem }]),
-            ("sequence", vec![Rule::Sequence { start: 1, step: 1, pad: 6, target: Target::Stem }]),
+            (
+                "sequence",
+                vec![Rule::Sequence {
+                    start: 1,
+                    step: 1,
+                    pad: 6,
+                    prefix: Vec::new(),
+                    suffix: Vec::new(),
+                    target: Target::Stem,
+                }],
+            ),
             (
                 "regex",
                 vec![Rule::Regex {
@@ -494,7 +518,14 @@ mod tests {
                         target: Target::Stem,
                     },
                     Rule::Case { style: CaseStyle::Lower, target: Target::Stem },
-                    Rule::Sequence { start: 1, step: 1, pad: 6, target: Target::Stem },
+                    Rule::Sequence {
+                        start: 1,
+                        step: 1,
+                        pad: 6,
+                        prefix: Vec::new(),
+                        suffix: Vec::new(),
+                        target: Target::Stem,
+                    },
                 ],
             ),
         ];

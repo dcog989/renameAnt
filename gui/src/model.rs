@@ -137,7 +137,10 @@ impl PlanModel {
             }
             Err(error) => {
                 self.error = Some(error);
-                self.plan = Plan::default();
+                // A pipeline that will not compile renames nothing, but the list
+                // still shows every row: the error belongs in the status, not in
+                // place of the table.
+                self.plan = self.build_plan(&RuleSet::default()).unwrap_or_default();
             }
         }
         // The footer splits the rows that will be renamed by what they are. The
@@ -323,8 +326,8 @@ mod tests {
 
         model.sort = Sort { key: SortKey::Status, desc: false };
         model.rebuild_view();
-        // "name is taken" sorts before "ok".
-        assert_eq!(model.view, vec![1, 0]);
+        // "match" sorts before "name is taken".
+        assert_eq!(model.view, vec![0, 1]);
     }
 
     #[test]

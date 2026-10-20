@@ -138,7 +138,8 @@ fn the_window_scans_plans_applies_and_undoes() {
 
     // A rule that needs no typing: number the names 001, 002, 003.
     harness.state_mut().edits.push(RuleEdit {
-        kind: RuleKind::Sequence,
+        enabled: true,
+        kind: RuleKind::Number,
         target: Target::Stem,
         ..RuleEdit::default()
     });

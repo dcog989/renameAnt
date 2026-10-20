@@ -1,7 +1,8 @@
 //! A rule as the editor holds it, and its mapping to a `core` `Rule`.
 //!
 //! A rule is edited as plain fields rather than as a `Rule` enum, so switching
-//! its kind never throws away what is already typed.
+//! its kind never throws away what is already typed. One kind is one card the
+//! user sees; a kind may pick a different `Rule` variant from its settings.
 
 use renameant_core::rule::{CaseStyle, InsertRemoveOp, NormalizeOp, Rule, Target};
 
@@ -14,69 +15,73 @@ pub const NORMALIZE_OPS: [(NormalizeOp, &str); 5] = [
     (NormalizeOp::StripControl, "strip control characters"),
 ];
 
-/// The rule types the editor can build. One `Rule` variant each.
+/// The case styles the editor offers.
+pub const CASE_STYLES: [CaseStyle; 8] = [
+    CaseStyle::Upper,
+    CaseStyle::Lower,
+    CaseStyle::Title,
+    CaseStyle::Sentence,
+    CaseStyle::Kebab,
+    CaseStyle::Snake,
+    CaseStyle::Camel,
+    CaseStyle::Pascal,
+];
+
+/// The rule types the editor can build. One card each, in the order a fresh
+/// pipeline shows them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RuleKind {
-    Regex,
-    Literal,
+    Replace,
+    Remove,
+    Trim,
+    Insert,
+    Number,
     Case,
-    InsertRemove,
-    Sequence,
     Normalize,
 }
 
 impl RuleKind {
-    pub const ALL: [RuleKind; 6] = [
-        RuleKind::Regex,
-        RuleKind::Literal,
+    pub const ALL: [RuleKind; 7] = [
+        RuleKind::Replace,
+        RuleKind::Remove,
+        RuleKind::Trim,
+        RuleKind::Insert,
+        RuleKind::Number,
         RuleKind::Case,
-        RuleKind::InsertRemove,
-        RuleKind::Sequence,
         RuleKind::Normalize,
     ];
 
     pub fn label(self) -> &'static str {
         match self {
-            RuleKind::Regex => "regex replace",
-            RuleKind::Literal => "literal replace",
+            RuleKind::Replace => "replace",
+            RuleKind::Remove => "remove",
+            RuleKind::Trim => "trim",
+            RuleKind::Insert => "insert",
+            RuleKind::Number => "number",
             RuleKind::Case => "change case",
-            RuleKind::InsertRemove => "add or remove text",
-            RuleKind::Sequence => "number in sequence",
             RuleKind::Normalize => "normalize",
         }
     }
 }
 
-/// Which `InsertRemoveOp` the editor is building.
+/// Where a text rule puts its text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InsertKind {
-    AddPrefix,
-    AddSuffix,
-    RemovePrefix,
-    RemoveSuffix,
+    Prefix,
+    Suffix,
+    Position,
 }
 
 impl InsertKind {
-    pub const ALL: [InsertKind; 4] = [
-        InsertKind::AddPrefix,
-        InsertKind::AddSuffix,
-        InsertKind::RemovePrefix,
-        InsertKind::RemoveSuffix,
-    ];
+    pub const ALL: [InsertKind; 3] =
+        [InsertKind::Prefix, InsertKind::Suffix, InsertKind::Position];
 
     pub fn label(self) -> &'static str {
         match self {
-            InsertKind::AddPrefix => "prefix",
-            InsertKind::AddSuffix => "suffix",
-            InsertKind::RemovePrefix => "remove prefix",
-            InsertKind::RemoveSuffix => "remove suffix",
+            InsertKind::Prefix => "prefix",
+            InsertKind::Suffix => "suffix",
+            InsertKind::Position => "position",
         }
-    }
-
-    /// Whether the op is byte-level, so it also reaches a name that is not
-    /// UTF-8.
-    pub fn is_byte(self) -> bool {
-        matches!(self, InsertKind::AddPrefix | InsertKind::AddSuffix)
     }
 }
 
@@ -84,80 +89,126 @@ impl InsertKind {
 /// `Rule` enum and every field stays editable in place.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RuleEdit {
+    /// A default card is always in the list; it has no remove button.
+    pub builtin: bool,
     /// A rule that is off stays in the list and in its place; it is skipped when
     /// the pipeline is compiled.
     pub enabled: bool,
     pub kind: RuleKind,
     pub target: Target,
-    /// The regex pattern, the literal `find`, or the added prefix/suffix.
+    /// A replace rule's pattern, or "find" when `regex` is off.
     pub value: String,
-    /// The regex or literal replacement.
+    /// The replace rule's replacement.
     pub replacement: String,
+    /// Whether `value` is a regular expression.
+    pub regex: bool,
     pub case: CaseStyle,
     pub insert: InsertKind,
+    /// The character index an `InsertKind::Position` inserts at.
+    pub at: u64,
+    /// The first character a remove rule drops.
+    pub remove_start: u64,
+    /// The character a remove rule stops before.
+    pub remove_end: u64,
+    /// How many characters a trim rule drops from the end.
     pub count: u64,
     pub start: u64,
     pub step: u64,
     pub pad: u64,
+    pub number_prefix: String,
+    pub number_suffix: String,
     pub normalize: [bool; NORMALIZE_OPS.len()],
 }
 
 impl Default for RuleEdit {
-    /// A new rule changes nothing until it is filled in, and needs no pattern
-    /// typed first.
+    /// A new rule changes nothing until it is switched on and filled in.
     fn default() -> Self {
         RuleEdit {
-            enabled: true,
-            kind: RuleKind::InsertRemove,
+            builtin: false,
+            enabled: false,
+            kind: RuleKind::Replace,
             target: Target::Whole,
             value: String::new(),
             replacement: String::new(),
+            regex: false,
             case: CaseStyle::Lower,
-            insert: InsertKind::AddPrefix,
+            insert: InsertKind::Prefix,
+            at: 0,
+            remove_start: 0,
+            remove_end: 1,
             count: 1,
             start: 1,
             step: 1,
             pad: 3,
+            number_prefix: String::new(),
+            number_suffix: String::new(),
             normalize: [false; NORMALIZE_OPS.len()],
         }
     }
 }
 
 impl RuleEdit {
+    /// A card that carries nothing: off, every field at its fresh value. The
+    /// regex toggle is ignored, because with an empty pattern it changes nothing.
+    fn is_blank(&self) -> bool {
+        let fresh = RuleEdit {
+            kind: self.kind,
+            builtin: self.builtin,
+            regex: self.regex,
+            ..RuleEdit::default()
+        };
+        *self == fresh
+    }
+
     /// The `Rule` this editor stands for. Infallible: a pattern that will not
     /// compile is `plan`'s error to report.
     pub fn to_rule(&self) -> Rule {
         match self.kind {
-            RuleKind::Regex => Rule::Regex {
+            RuleKind::Replace if self.regex => Rule::Regex {
                 pattern: self.value.clone(),
                 replacement: self.replacement.clone(),
                 target: self.target,
             },
-            RuleKind::Literal => Rule::Literal {
+            RuleKind::Replace => Rule::Literal {
                 find: self.value.clone().into_bytes(),
                 replace: self.replacement.clone().into_bytes(),
                 target: self.target,
             },
-            RuleKind::Case => Rule::Case { style: self.case, target: self.target },
-            RuleKind::InsertRemove => Rule::InsertRemove {
-                op: match self.insert {
-                    InsertKind::AddPrefix => {
-                        InsertRemoveOp::AddPrefix(self.value.clone().into_bytes())
-                    }
-                    InsertKind::AddSuffix => {
-                        InsertRemoveOp::AddSuffix(self.value.clone().into_bytes())
-                    }
-                    InsertKind::RemovePrefix => InsertRemoveOp::RemovePrefix(self.count as usize),
-                    InsertKind::RemoveSuffix => InsertRemoveOp::RemoveSuffix(self.count as usize),
+            RuleKind::Remove => Rule::InsertRemove {
+                op: InsertRemoveOp::RemoveRange {
+                    start: self.remove_start as usize,
+                    end: self.remove_end as usize,
                 },
                 target: self.target,
             },
-            RuleKind::Sequence => Rule::Sequence {
+            RuleKind::Trim => Rule::InsertRemove {
+                op: InsertRemoveOp::RemoveSuffix(self.count as usize),
+                target: self.target,
+            },
+            RuleKind::Insert => Rule::InsertRemove {
+                op: match self.insert {
+                    InsertKind::Prefix => {
+                        InsertRemoveOp::AddPrefix(self.value.clone().into_bytes())
+                    }
+                    InsertKind::Suffix => {
+                        InsertRemoveOp::AddSuffix(self.value.clone().into_bytes())
+                    }
+                    InsertKind::Position => InsertRemoveOp::InsertAt {
+                        at: self.at as usize,
+                        text: self.value.clone().into_bytes(),
+                    },
+                },
+                target: self.target,
+            },
+            RuleKind::Number => Rule::Sequence {
                 start: self.start,
                 step: self.step,
                 pad: self.pad as usize,
+                prefix: self.number_prefix.clone().into_bytes(),
+                suffix: self.number_suffix.clone().into_bytes(),
                 target: self.target,
             },
+            RuleKind::Case => Rule::Case { style: self.case, target: self.target },
             RuleKind::Normalize => Rule::Normalize {
                 ops: NORMALIZE_OPS
                     .iter()
@@ -173,17 +224,18 @@ impl RuleEdit {
     /// The inverse of [`RuleEdit::to_rule`], for a rule loaded from disk. A
     /// literal's bytes come back as text: the editor can only ever produce
     /// UTF-8 there, so nothing it saved is lost.
-    pub fn from_rule(rule: &Rule, enabled: bool) -> RuleEdit {
-        let mut edit = RuleEdit { enabled, ..RuleEdit::default() };
+    pub fn from_rule(rule: &Rule, enabled: bool, builtin: bool) -> RuleEdit {
+        let mut edit = RuleEdit { enabled, builtin, ..RuleEdit::default() };
         match rule {
             Rule::Regex { pattern, replacement, target } => {
-                edit.kind = RuleKind::Regex;
+                edit.kind = RuleKind::Replace;
+                edit.regex = true;
                 edit.value = pattern.clone();
                 edit.replacement = replacement.clone();
                 edit.target = *target;
             }
             Rule::Literal { find, replace, target } => {
-                edit.kind = RuleKind::Literal;
+                edit.kind = RuleKind::Replace;
                 edit.value = String::from_utf8_lossy(find).into_owned();
                 edit.replacement = String::from_utf8_lossy(replace).into_owned();
                 edit.target = *target;
@@ -194,32 +246,47 @@ impl RuleEdit {
                 edit.target = *target;
             }
             Rule::InsertRemove { op, target } => {
-                edit.kind = RuleKind::InsertRemove;
                 edit.target = *target;
                 match op {
                     InsertRemoveOp::AddPrefix(bytes) => {
-                        edit.insert = InsertKind::AddPrefix;
+                        edit.kind = RuleKind::Insert;
+                        edit.insert = InsertKind::Prefix;
                         edit.value = String::from_utf8_lossy(bytes).into_owned();
                     }
                     InsertRemoveOp::AddSuffix(bytes) => {
-                        edit.insert = InsertKind::AddSuffix;
+                        edit.kind = RuleKind::Insert;
+                        edit.insert = InsertKind::Suffix;
                         edit.value = String::from_utf8_lossy(bytes).into_owned();
                     }
+                    InsertRemoveOp::InsertAt { at, text } => {
+                        edit.kind = RuleKind::Insert;
+                        edit.insert = InsertKind::Position;
+                        edit.at = *at as u64;
+                        edit.value = String::from_utf8_lossy(text).into_owned();
+                    }
+                    InsertRemoveOp::RemoveRange { start, end } => {
+                        edit.kind = RuleKind::Remove;
+                        edit.remove_start = *start as u64;
+                        edit.remove_end = *end as u64;
+                    }
                     InsertRemoveOp::RemovePrefix(count) => {
-                        edit.insert = InsertKind::RemovePrefix;
-                        edit.count = *count as u64;
+                        edit.kind = RuleKind::Remove;
+                        edit.remove_start = 0;
+                        edit.remove_end = *count as u64;
                     }
                     InsertRemoveOp::RemoveSuffix(count) => {
-                        edit.insert = InsertKind::RemoveSuffix;
+                        edit.kind = RuleKind::Trim;
                         edit.count = *count as u64;
                     }
                 }
             }
-            Rule::Sequence { start, step, pad, target } => {
-                edit.kind = RuleKind::Sequence;
+            Rule::Sequence { start, step, pad, prefix, suffix, target } => {
+                edit.kind = RuleKind::Number;
                 edit.start = *start;
                 edit.step = *step;
                 edit.pad = *pad as u64;
+                edit.number_prefix = String::from_utf8_lossy(prefix).into_owned();
+                edit.number_suffix = String::from_utf8_lossy(suffix).into_owned();
                 edit.target = *target;
             }
             Rule::Normalize { ops, target } => {
@@ -237,13 +304,25 @@ impl RuleEdit {
 }
 
 /// The pipeline a fresh start shows: one card per rule type, all off, so they
-/// always display without changing anything until the user turns one on. The
-/// user adds custom rules on top.
+/// always display without changing anything until the user switches one on.
 pub fn default_rules() -> Vec<RuleEdit> {
-    RuleKind::ALL
-        .iter()
-        .map(|kind| RuleEdit { enabled: false, kind: *kind, ..RuleEdit::default() })
-        .collect()
+    with_defaults(Vec::new())
+}
+
+/// Adds a default card for every rule kind the list does not already have one
+/// of, in the order a fresh pipeline shows them. Default cards are never
+/// removed, so a saved list that lost one gets it back.
+pub fn with_defaults(mut edits: Vec<RuleEdit>) -> Vec<RuleEdit> {
+    // A blank card carries no intent: it is what an old default seed became
+    // when the kinds changed. Drop it before topping the list up.
+    edits.retain(|edit| edit.builtin || !edit.is_blank());
+    for kind in RuleKind::ALL {
+        match edits.iter_mut().find(|edit| edit.kind == kind) {
+            Some(edit) => edit.builtin = true,
+            None => edits.push(RuleEdit { builtin: true, kind, ..RuleEdit::default() }),
+        }
+    }
+    edits
 }
 
 pub fn target_label(target: Target) -> &'static str {
@@ -260,6 +339,10 @@ pub fn case_label(style: CaseStyle) -> &'static str {
         CaseStyle::Upper => "upper",
         CaseStyle::Title => "title",
         CaseStyle::Sentence => "sentence",
+        CaseStyle::Kebab => "kebab",
+        CaseStyle::Snake => "snake",
+        CaseStyle::Camel => "camel",
+        CaseStyle::Pascal => "pascal",
     }
 }
 
@@ -267,143 +350,103 @@ pub fn case_label(style: CaseStyle) -> &'static str {
 mod tests {
     use super::*;
 
-    #[test]
-    fn every_editor_kind_maps_to_its_rule() {
-        assert_eq!(
-            RuleEdit {
-                kind: RuleKind::Regex,
-                value: "^(.*)$".into(),
-                replacement: "x$1".into(),
-                target: Target::Stem,
-                ..RuleEdit::default()
-            }
-            .to_rule(),
-            Rule::Regex {
-                pattern: "^(.*)$".into(),
-                replacement: "x$1".into(),
-                target: Target::Stem
-            }
-        );
-        assert_eq!(
-            RuleEdit {
-                kind: RuleKind::Literal,
-                value: "IMG_".into(),
-                target: Target::Whole,
-                ..RuleEdit::default()
-            }
-            .to_rule(),
-            Rule::Literal { find: b"IMG_".to_vec(), replace: Vec::new(), target: Target::Whole }
-        );
-        assert_eq!(
-            RuleEdit {
-                kind: RuleKind::Case,
-                case: CaseStyle::Title,
-                target: Target::Whole,
-                ..RuleEdit::default()
-            }
-            .to_rule(),
-            Rule::Case { style: CaseStyle::Title, target: Target::Whole }
-        );
-        assert_eq!(
-            RuleEdit {
-                kind: RuleKind::InsertRemove,
-                insert: InsertKind::RemovePrefix,
-                count: 3,
-                target: Target::Stem,
-                ..RuleEdit::default()
-            }
-            .to_rule(),
-            Rule::InsertRemove { op: InsertRemoveOp::RemovePrefix(3), target: Target::Stem }
-        );
-        assert_eq!(
-            RuleEdit {
-                kind: RuleKind::InsertRemove,
-                insert: InsertKind::AddSuffix,
-                value: "_x".into(),
-                target: Target::Stem,
-                ..RuleEdit::default()
-            }
-            .to_rule(),
-            Rule::InsertRemove {
-                op: InsertRemoveOp::AddSuffix(b"_x".to_vec()),
-                target: Target::Stem
-            }
-        );
-        assert_eq!(
-            RuleEdit {
-                kind: RuleKind::Sequence,
-                start: 5,
-                step: 2,
-                pad: 4,
-                target: Target::Stem,
-                ..RuleEdit::default()
-            }
-            .to_rule(),
-            Rule::Sequence { start: 5, step: 2, pad: 4, target: Target::Stem }
-        );
-
-        // Normalize ops come out in the canonical order, not the click order.
-        let mut normalize =
-            RuleEdit { kind: RuleKind::Normalize, target: Target::Whole, ..RuleEdit::default() };
-        normalize.normalize[2] = true;
-        normalize.normalize[0] = true;
-        assert_eq!(
-            normalize.to_rule(),
-            Rule::Normalize {
-                ops: vec![NormalizeOp::Nfc, NormalizeOp::CollapseSpaces],
-                target: Target::Whole,
-            }
-        );
+    fn round_trips(edit: RuleEdit) {
+        assert_eq!(RuleEdit::from_rule(&edit.to_rule(), edit.enabled, edit.builtin), edit);
     }
 
     #[test]
-    fn a_rule_survives_a_save_and_load_round_trip() {
-        let mut normalize =
-            RuleEdit { kind: RuleKind::Normalize, target: Target::Stem, ..RuleEdit::default() };
-        normalize.normalize[1] = true;
-        normalize.normalize[4] = true;
-        let edits = [
-            RuleEdit {
-                kind: RuleKind::Regex,
-                value: "^(.*)$".into(),
-                replacement: "x$1".into(),
-                target: Target::Stem,
-                ..RuleEdit::default()
-            },
-            RuleEdit {
-                kind: RuleKind::Literal,
-                value: "IMG_".into(),
-                replacement: "img-".into(),
-                target: Target::Whole,
-                ..RuleEdit::default()
-            },
-            RuleEdit { kind: RuleKind::Case, case: CaseStyle::Title, ..RuleEdit::default() },
-            RuleEdit {
-                kind: RuleKind::InsertRemove,
-                insert: InsertKind::RemoveSuffix,
-                count: 4,
-                ..RuleEdit::default()
-            },
-            RuleEdit {
-                kind: RuleKind::InsertRemove,
-                insert: InsertKind::AddPrefix,
-                value: "2024-".into(),
-                ..RuleEdit::default()
-            },
-            RuleEdit {
-                kind: RuleKind::Sequence,
-                start: 5,
-                step: 2,
-                pad: 4,
-                target: Target::Stem,
-                ..RuleEdit::default()
-            },
-            normalize,
-            RuleEdit { enabled: false, kind: RuleKind::Case, ..RuleEdit::default() },
-        ];
+    fn every_kind_survives_a_save_and_load_round_trip() {
+        round_trips(RuleEdit {
+            kind: RuleKind::Replace,
+            regex: true,
+            value: "a+".into(),
+            replacement: "b".into(),
+            target: Target::Stem,
+            ..RuleEdit::default()
+        });
+        round_trips(RuleEdit {
+            kind: RuleKind::Replace,
+            value: "IMG_".into(),
+            ..RuleEdit::default()
+        });
+        round_trips(RuleEdit {
+            kind: RuleKind::Remove,
+            remove_start: 2,
+            remove_end: 4,
+            ..RuleEdit::default()
+        });
+        round_trips(RuleEdit { kind: RuleKind::Trim, count: 3, ..RuleEdit::default() });
+        round_trips(RuleEdit {
+            kind: RuleKind::Insert,
+            insert: InsertKind::Suffix,
+            value: "_x".into(),
+            ..RuleEdit::default()
+        });
+        round_trips(RuleEdit {
+            kind: RuleKind::Insert,
+            insert: InsertKind::Position,
+            at: 2,
+            value: "--".into(),
+            ..RuleEdit::default()
+        });
+        round_trips(RuleEdit {
+            kind: RuleKind::Number,
+            start: 5,
+            step: 2,
+            pad: 4,
+            number_prefix: "n".into(),
+            number_suffix: "x".into(),
+            target: Target::Stem,
+            ..RuleEdit::default()
+        });
+        round_trips(RuleEdit {
+            kind: RuleKind::Case,
+            case: CaseStyle::Pascal,
+            ..RuleEdit::default()
+        });
+        round_trips(RuleEdit {
+            kind: RuleKind::Normalize,
+            normalize: [false, true, false, false, false],
+            ..RuleEdit::default()
+        });
+    }
 
-        for edit in edits {
-            assert_eq!(RuleEdit::from_rule(&edit.to_rule(), edit.enabled), edit);
-        }
+    #[test]
+    fn a_missing_default_card_is_added_once_and_custom_cards_are_kept() {
+        let custom = RuleEdit { kind: RuleKind::Replace, value: "x".into(), ..RuleEdit::default() };
+        let mut seeds = default_rules();
+        seeds.retain(|edit| edit.kind != RuleKind::Trim);
+        seeds.push(custom.clone());
+
+        let edits = with_defaults(seeds);
+        assert_eq!(edits.iter().filter(|edit| edit.kind == RuleKind::Trim).count(), 1);
+        assert_eq!(edits.iter().filter(|edit| edit.builtin).count(), RuleKind::ALL.len());
+        assert!(edits.contains(&custom));
+    }
+
+    #[test]
+    fn a_blank_card_is_dropped_and_a_configured_one_is_kept() {
+        let blank = RuleEdit { kind: RuleKind::Trim, ..RuleEdit::default() };
+        let kept = RuleEdit { kind: RuleKind::Trim, count: 3, ..RuleEdit::default() };
+
+        let edits = with_defaults(vec![blank, kept]);
+        let trims: Vec<&RuleEdit> =
+            edits.iter().filter(|edit| edit.kind == RuleKind::Trim).collect();
+        assert_eq!(trims.len(), 1);
+        assert_eq!(trims[0].count, 3);
+        assert!(trims[0].builtin);
+    }
+
+    #[test]
+    fn a_remove_prefix_from_an_old_config_reads_as_a_range() {
+        let loaded = RuleEdit::from_rule(
+            &Rule::InsertRemove { op: InsertRemoveOp::RemovePrefix(3), target: Target::Stem },
+            true,
+            false,
+        );
+        assert_eq!(
+            (loaded.kind, loaded.remove_start, loaded.remove_end),
+            (RuleKind::Remove, 0, 3)
+        );
     }
 }

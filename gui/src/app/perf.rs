@@ -23,7 +23,7 @@ use renameant_core::scan::{DirIndex, Entry, Kind};
 use super::App;
 use super::kittest::{ENV, pump_until};
 
-use crate::edit::RuleEdit;
+use crate::edit::{InsertKind, RuleEdit, RuleKind};
 
 /// One 60 fps period, what the whole frame has to fit in.
 const FRAME_BUDGET: Duration = Duration::from_millis(16);
@@ -72,7 +72,13 @@ fn perf_frames_over_100k_rows() {
         let app = harness.state_mut();
         app.model.set_scan(entries, index);
         // A pipeline that renames, so the preview shows an After that differs.
-        app.edits = vec![RuleEdit { value: "p-".to_owned(), ..RuleEdit::default() }];
+        app.edits = vec![RuleEdit {
+            enabled: true,
+            kind: RuleKind::Insert,
+            insert: InsertKind::Prefix,
+            value: "p-".to_owned(),
+            ..RuleEdit::default()
+        }];
         app.replan();
         assert_eq!(app.model.view.len(), count, "the whole scan is in the view");
 

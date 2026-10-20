@@ -9,8 +9,8 @@ use renameant_core::plan::{ConflictKind, InvalidKind, Status};
 /// What a row's status means, in the user's words.
 pub fn status_label(status: Status) -> &'static str {
     match status {
-        Status::Ok => "ok",
-        Status::Unchanged => "unchanged",
+        Status::Ok => "match",
+        Status::Unchanged => "no match",
         Status::Conflict(ConflictKind::DuplicateTarget) => "two rows want this name",
         Status::Conflict(ConflictKind::TargetExists) => "name is taken",
         Status::Conflict(ConflictKind::CaseOnly) => "case-only collision",

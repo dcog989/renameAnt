@@ -15,7 +15,7 @@ use renameant_core::rule::RuleSet;
 
 use crate::config;
 use crate::dialogs::{self, Choice};
-use crate::edit::{RuleEdit, default_rules};
+use crate::edit::{RuleEdit, default_rules, with_defaults};
 use crate::editor;
 use crate::history;
 use crate::logo;
@@ -104,7 +104,7 @@ impl App {
         style::apply(&cc.egui_ctx);
         let config_path = config::default_path().unwrap_or_else(|_| PathBuf::from(FALLBACK_CONFIG));
         let (edits, mut status) = match config::load(&config_path) {
-            Ok(edits) if !edits.is_empty() => (edits, String::new()),
+            Ok(edits) if !edits.is_empty() => (with_defaults(edits), String::new()),
             Ok(_) => (default_rules(), String::new()),
             Err(error) => (default_rules(), format!("the saved rules could not be read: {error}")),
         };
