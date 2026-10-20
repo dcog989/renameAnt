@@ -1,0 +1,582 @@
+//! Append-only JSONL journal.
+//!
+//! One record per *completed* rename, `fsync`ed before the next begins — unless
+//! fast mode batches the `fsync`, which trades the last batch of undo records
+//! against a crash for one write per rename instead of one disk round trip. Names
+//! are stored as raw bytes because a JSON string cannot hold them, and paths
+//! are absolute so undo does not depend on the working directory.
+//!
+//! An open [`Journal`] holds an exclusive `flock` for its lifetime, so one run at
+//! a time claims a run id and appends it.
+
+use std::collections::HashMap;
+use std::fs::{File, OpenOptions};
+use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
+
+use rustix::fs::{FlockOperation, flock, fsync};
+use serde::{Deserialize, Serialize};
+
+use crate::bytes_serde;
+
+/// Journal file name under `$XDG_STATE_HOME/renameant/`.
+const JOURNAL_FILE: &str = "journal.jsonl";
+const STATE_DIR: &str = "renameant";
+/// Bytes read per backward step when locating a run's renames.
+const TAIL_CHUNK: usize = 64 * 1024;
+
+pub type RunId = u64;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunOutcome {
+    /// Every planned row was renamed.
+    Completed,
+    /// Some rows were renamed and some failed. Partial application is normal
+    /// and stays undoable.
+    Partial,
+    /// Nothing was renamed.
+    Aborted,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "record", rename_all = "snake_case")]
+pub enum JournalRecord {
+    /// Written before the first rename. A `begin` with no matching `end` is an
+    /// interrupted run, surfaced as such and never resumed.
+    Begin {
+        run: RunId,
+        at: u64,
+        planned: usize,
+        /// The overwrite opt-in was enabled, so this session is irrecoverable.
+        overwrite: bool,
+        /// Set when this run is an undo of another run.
+        undo_of: Option<RunId>,
+    },
+    /// One completed rename.
+    Rename {
+        run: RunId,
+        #[serde(with = "bytes_serde::path")]
+        from: PathBuf,
+        #[serde(with = "bytes_serde::path")]
+        to: PathBuf,
+    },
+    End {
+        run: RunId,
+        at: u64,
+        outcome: RunOutcome,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Session {
+    pub run: RunId,
+    pub at: u64,
+    /// Completed renames, which is exactly what undo can reverse.
+    pub renames: usize,
+    pub overwrite: bool,
+    pub undo_of: Option<RunId>,
+    /// No `end` record: the run was interrupted.
+    pub interrupted: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum RecordKind {
+    Begin,
+    Rename,
+    End,
+}
+
+/// The metadata of a record, without its paths. Deserializing this skips the
+/// base64 `from`/`to` a full record carries, which is where its cost is, so the
+/// whole journal can be scanned for run metadata without decoding a single path.
+#[derive(Deserialize)]
+struct RecordMeta {
+    record: RecordKind,
+    run: RunId,
+    #[serde(default)]
+    at: u64,
+    #[serde(default)]
+    overwrite: bool,
+    #[serde(default)]
+    undo_of: Option<RunId>,
+}
+
+/// `$XDG_STATE_HOME/renameant/journal.jsonl`, default
+/// `~/.local/state/renameant/journal.jsonl`.
+pub fn default_path() -> io::Result<PathBuf> {
+    let base = match std::env::var_os("XDG_STATE_HOME") {
+        Some(value) if !value.is_empty() => PathBuf::from(value),
+        _ => {
+            let home = std::env::var_os("HOME").ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "neither XDG_STATE_HOME nor HOME is set, so the journal has no location",
+                )
+            })?;
+            PathBuf::from(home).join(".local").join("state")
+        }
+    };
+    Ok(base.join(STATE_DIR).join(JOURNAL_FILE))
+}
+
+pub(crate) fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
+}
+
+pub struct Journal {
+    file: File,
+    /// Records written, and how many of them are on disk.
+    written: usize,
+    synced: usize,
+    /// Records between two `fsync`s. One is the durable default; fast mode
+    /// passes [`BATCHED_SYNC_EVERY`].
+    sync_every: usize,
+}
+
+/// Records written between two `fsync`s in fast mode. A crash can lose at most
+/// this many renames' undo records, and the renames themselves are never at
+/// stake: measured on a btrfs/nvme, a per-record `fsync` costs ~785 us against
+/// ~8 us batched.
+pub const BATCHED_SYNC_EVERY: usize = 256;
+
+impl Journal {
+    /// Opens the journal with one `fsync` per record: every completed rename is
+    /// on disk before the next begins.
+    pub fn open(path: PathBuf) -> io::Result<Journal> {
+        Journal::open_syncing(path, 1)
+    }
+
+    /// Opens the journal, `fsync`ing every `sync_every` records. A run calls
+    /// [`Journal::sync`] at its end either way, so only the batch a crash lands
+    /// in is ever at risk.
+    pub fn open_syncing(path: PathBuf, sync_every: usize) -> io::Result<Journal> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let file = OpenOptions::new().create(true).append(true).open(&path)?;
+        // One writer per journal: hold an exclusive lock for the whole run so
+        // two processes cannot read the same next run id and both append it.
+        // Released when this `Journal` drops.
+        flock(&file, FlockOperation::LockExclusive)?;
+        Ok(Journal { file, written: 0, synced: 0, sync_every: sync_every.max(1) })
+    }
+
+    /// Appends one record, `fsync`ing it when it closes a batch. A failure here
+    /// aborts the run.
+    pub fn append(&mut self, record: &JournalRecord) -> io::Result<()> {
+        let mut line = serde_json::to_string(record)?;
+        line.push('\n');
+        self.file.write_all(line.as_bytes())?;
+        self.file.flush()?;
+        self.written += 1;
+        if self.written - self.synced >= self.sync_every {
+            self.sync()?;
+        }
+        Ok(())
+    }
+
+    /// Puts every record written since the last `fsync` on disk. A no-op when
+    /// they are already there.
+    pub fn sync(&mut self) -> io::Result<()> {
+        if self.written == self.synced {
+            return Ok(());
+        }
+        fsync(&self.file)?;
+        self.synced = self.written;
+        Ok(())
+    }
+
+    /// Reads the journal line by line, handing each complete line to `on_line`.
+    /// A missing file is an empty journal. A truncated final line is what a crash
+    /// mid-append leaves behind, so it ends the read without failing.
+    fn for_each_line(
+        path: &Path,
+        mut on_line: impl FnMut(&str) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let file = match File::open(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error),
+        };
+
+        let mut reader = BufReader::new(file);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            if reader.read_line(&mut line)? == 0 {
+                return Ok(());
+            }
+            let text = line.trim_end_matches('\n');
+            if line.ends_with('\n') {
+                on_line(text)?;
+            } else {
+                let _ = on_line(text);
+                return Ok(());
+            }
+        }
+    }
+
+    /// Next free run id: one past the highest `begin` in the journal. Only the
+    /// run metadata is parsed, never a path.
+    pub fn next_run_id(path: &Path) -> io::Result<RunId> {
+        let mut highest = 0;
+        Journal::for_each_line(path, |line| {
+            let meta = parse_meta(line)?;
+            if meta.record == RecordKind::Begin {
+                highest = highest.max(meta.run);
+            }
+            Ok(())
+        })?;
+        Ok(highest + 1)
+    }
+
+    /// Reads the journal. A missing file is an empty journal. A truncated final
+    /// line is what a crash mid-append leaves behind, so it ends the read; any
+    /// other unparseable line is an error rather than a silent drop.
+    pub fn read(path: &Path) -> io::Result<Vec<JournalRecord>> {
+        let mut records: Vec<JournalRecord> = Vec::new();
+        Journal::for_each_line(path, |line| {
+            let record = serde_json::from_str(line).map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("journal line {}: {error}", records.len() + 1),
+                )
+            })?;
+            records.push(record);
+            Ok(())
+        })?;
+        Ok(records)
+    }
+
+    /// Past runs, oldest first. Only the run metadata is deserialized, so listing
+    /// the history never decodes a path.
+    pub fn sessions(path: &Path) -> io::Result<Vec<Session>> {
+        let mut sessions: Vec<Session> = Vec::new();
+        let mut at_run: HashMap<RunId, usize> = HashMap::new();
+
+        Journal::for_each_line(path, |line| {
+            let meta = parse_meta(line)?;
+            match meta.record {
+                RecordKind::Begin => {
+                    at_run.insert(meta.run, sessions.len());
+                    sessions.push(Session {
+                        run: meta.run,
+                        at: meta.at,
+                        renames: 0,
+                        overwrite: meta.overwrite,
+                        undo_of: meta.undo_of,
+                        interrupted: true,
+                    });
+                }
+                RecordKind::Rename => {
+                    if let Some(&index) = at_run.get(&meta.run) {
+                        sessions[index].renames += 1;
+                    }
+                }
+                RecordKind::End => {
+                    if let Some(&index) = at_run.get(&meta.run) {
+                        sessions[index].interrupted = false;
+                    }
+                }
+            }
+            Ok(())
+        })?;
+        Ok(sessions)
+    }
+
+    /// The completed renames of one run, in the order they happened.
+    ///
+    /// A run's `begin` precedes its `rename` records in append order, so the file
+    /// is read backward and the scan stops at that `begin`: a recent run costs one
+    /// tail read, not the whole journal. `rename` lines for other runs are skipped
+    /// after parsing only their metadata, so no unrelated path is ever decoded.
+    pub fn renames(path: &Path, run: RunId) -> io::Result<Vec<(PathBuf, PathBuf)>> {
+        let mut file = match File::open(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error),
+        };
+        let end = file.metadata()?.len();
+        let mut trailing_partial = false;
+        if end > 0 {
+            file.seek(SeekFrom::Start(end - 1))?;
+            let mut last = [0u8; 1];
+            file.read_exact(&mut last)?;
+            trailing_partial = last[0] != b'\n';
+        }
+
+        let mut renames: Vec<(PathBuf, PathBuf)> = Vec::new();
+        // Bytes of the leading, not-yet-complete line carried over from the
+        // later chunk in the previous step.
+        let mut pending: Vec<u8> = Vec::new();
+        let mut first_line = true;
+        let mut pos = end;
+        'outer: loop {
+            let chunk_start = pos.saturating_sub(TAIL_CHUNK as u64);
+            let mut buffer = vec![0u8; (pos - chunk_start) as usize];
+            file.seek(SeekFrom::Start(chunk_start))?;
+            file.read_exact(&mut buffer)?;
+            buffer.extend_from_slice(&pending);
+
+            let mut line_end = buffer.len();
+            while line_end > 0 {
+                let newline = buffer[..line_end].iter().rposition(|&byte| byte == b'\n');
+                let line_start = newline.map_or(0, |at| at + 1);
+                if newline.is_none() && chunk_start > 0 {
+                    // The line starts before this chunk: carry the fragment into
+                    // the next, earlier read.
+                    pending = buffer[line_start..line_end].to_vec();
+                    break;
+                }
+                let line = &buffer[line_start..line_end];
+                if !line.is_empty() {
+                    let is_partial = first_line && trailing_partial;
+                    first_line = false;
+                    match Journal::tail_line(line, run, &mut renames) {
+                        Ok(true) => break 'outer,
+                        Ok(false) => {}
+                        Err(_) if is_partial => {}
+                        Err(error) => return Err(error),
+                    }
+                }
+                line_end = newline.unwrap_or(0);
+            }
+
+            if chunk_start == 0 {
+                break;
+            }
+            pos = chunk_start;
+        }
+
+        renames.reverse();
+        Ok(renames)
+    }
+
+    /// Handles one line read backward. Returns `true` once `run`'s `begin` is
+    /// reached, which means every earlier line belongs to another run.
+    fn tail_line(line: &[u8], run: RunId, out: &mut Vec<(PathBuf, PathBuf)>) -> io::Result<bool> {
+        let text = std::str::from_utf8(line).map_err(invalid_line)?;
+        let meta = parse_meta(text)?;
+        if meta.run != run {
+            return Ok(false);
+        }
+        match meta.record {
+            RecordKind::Begin => return Ok(true),
+            RecordKind::Rename => {
+                if let JournalRecord::Rename { from, to, .. } =
+                    serde_json::from_str::<JournalRecord>(text).map_err(invalid_line)?
+                {
+                    out.push((from, to));
+                }
+            }
+            RecordKind::End => {}
+        }
+        Ok(false)
+    }
+}
+
+/// A line that is present but not a record.
+fn invalid_line(error: impl std::fmt::Display) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, format!("journal: {error}"))
+}
+
+/// Parses a record's metadata, which carries no path.
+fn parse_meta(line: &str) -> io::Result<RecordMeta> {
+    serde_json::from_str(line).map_err(invalid_line)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    fn temp_journal() -> (tempfile::TempDir, PathBuf) {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = temp.path().join("state").join("journal.jsonl");
+        (temp, path)
+    }
+
+    fn rename(run: RunId, from: PathBuf, to: PathBuf) -> JournalRecord {
+        JournalRecord::Rename { run, from, to }
+    }
+
+    #[test]
+    fn records_round_trip_through_raw_bytes() {
+        let (_temp, path) = temp_journal();
+        let non_utf8 = PathBuf::from(OsString::from_vec(b"/tmp/\xff".to_vec()));
+
+        let mut journal = Journal::open(path.clone()).expect("open");
+        journal.append(&rename(1, non_utf8.clone(), PathBuf::from("/tmp/b"))).expect("append");
+        journal
+            .append(&JournalRecord::Begin {
+                run: 1,
+                at: 10,
+                planned: 1,
+                overwrite: false,
+                undo_of: None,
+            })
+            .expect("append");
+        drop(journal);
+
+        let records = Journal::read(&path).expect("read");
+        // A name that is not UTF-8 survives, which a JSON string could not do.
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0], rename(1, non_utf8, PathBuf::from("/tmp/b")));
+    }
+
+    #[test]
+    fn a_truncated_final_line_ends_the_read_instead_of_failing() {
+        let (_temp, path) = temp_journal();
+        let mut journal = Journal::open(path.clone()).expect("open");
+        journal
+            .append(&rename(1, PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")))
+            .expect("append");
+        drop(journal);
+
+        let mut file = OpenOptions::new().append(true).open(&path).expect("reopen");
+        file.write_all(b"{\"record\":\"ren").expect("append half a line");
+        drop(file);
+
+        assert_eq!(Journal::read(&path).expect("read").len(), 1);
+    }
+
+    #[test]
+    fn a_corrupt_line_in_the_middle_is_an_error() {
+        let (_temp, path) = temp_journal();
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&path, b"nonsense\n").expect("write");
+
+        assert!(Journal::read(&path).is_err());
+    }
+
+    #[test]
+    fn a_begin_without_an_end_is_an_interrupted_session() {
+        let (_temp, path) = temp_journal();
+        let mut journal = Journal::open(path.clone()).expect("open");
+        journal
+            .append(&JournalRecord::Begin {
+                run: 1,
+                at: 10,
+                planned: 3,
+                overwrite: false,
+                undo_of: None,
+            })
+            .expect("append");
+        journal
+            .append(&rename(1, PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")))
+            .expect("append");
+        journal
+            .append(&JournalRecord::Begin {
+                run: 2,
+                at: 20,
+                planned: 1,
+                overwrite: true,
+                undo_of: None,
+            })
+            .expect("append");
+        journal
+            .append(&JournalRecord::End { run: 2, at: 21, outcome: RunOutcome::Completed })
+            .expect("append");
+
+        let sessions = Journal::sessions(&path).expect("sessions");
+        assert_eq!(sessions.len(), 2);
+        assert!(sessions[0].interrupted);
+        assert_eq!(sessions[0].renames, 1);
+        assert!(!sessions[1].interrupted);
+        assert!(sessions[1].overwrite);
+        assert_eq!(Journal::next_run_id(&path).expect("next"), 3);
+        assert_eq!(Journal::renames(&path, 1).expect("renames").len(), 1);
+    }
+
+    #[test]
+    fn a_missing_journal_reads_as_empty() {
+        let (_temp, path) = temp_journal();
+        assert!(Journal::read(&path).expect("read").is_empty());
+        assert_eq!(Journal::next_run_id(&path).expect("next"), 1);
+    }
+
+    #[test]
+    fn the_journal_holds_an_exclusive_lock() {
+        let (_temp, path) = temp_journal();
+        let held = Journal::open(path.clone()).expect("open");
+        let other = File::open(&path).expect("second handle");
+        assert!(
+            flock(&other, FlockOperation::NonBlockingLockExclusive).is_err(),
+            "a held journal must refuse a second lock"
+        );
+        drop(held);
+        assert!(
+            flock(&other, FlockOperation::NonBlockingLockExclusive).is_ok(),
+            "the lock is released with the Journal"
+        );
+    }
+
+    #[test]
+    fn renames_finds_a_run_older_than_one_tail_chunk() {
+        let (_temp, path) = temp_journal();
+        let mut journal = Journal::open(path.clone()).expect("open");
+        journal
+            .append(&JournalRecord::Begin {
+                run: 1,
+                at: 0,
+                planned: 2,
+                overwrite: false,
+                undo_of: None,
+            })
+            .expect("append");
+        journal
+            .append(&rename(1, PathBuf::from("/tmp/a1"), PathBuf::from("/tmp/b1")))
+            .expect("append");
+        journal
+            .append(&rename(1, PathBuf::from("/tmp/a2"), PathBuf::from("/tmp/b2")))
+            .expect("append");
+        journal
+            .append(&JournalRecord::End { run: 1, at: 0, outcome: RunOutcome::Completed })
+            .expect("append");
+        // More than one `TAIL_CHUNK` of later runs, so run 1 is out of the tail.
+        let long = PathBuf::from(format!("/tmp/{}", "x".repeat(200)));
+        for run in 2..=2000 {
+            journal.append(&rename(run, long.clone(), long.clone())).expect("append");
+        }
+        drop(journal);
+
+        assert_eq!(
+            Journal::renames(&path, 1).expect("renames"),
+            vec![
+                (PathBuf::from("/tmp/a1"), PathBuf::from("/tmp/b1")),
+                (PathBuf::from("/tmp/a2"), PathBuf::from("/tmp/b2")),
+            ]
+        );
+        assert_eq!(Journal::renames(&path, 2000).expect("renames").len(), 1);
+    }
+
+    #[test]
+    fn renames_ignores_a_truncated_final_line() {
+        let (_temp, path) = temp_journal();
+        let mut journal = Journal::open(path.clone()).expect("open");
+        journal
+            .append(&JournalRecord::Begin {
+                run: 1,
+                at: 0,
+                planned: 1,
+                overwrite: false,
+                undo_of: None,
+            })
+            .expect("append");
+        journal
+            .append(&rename(1, PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")))
+            .expect("append");
+        drop(journal);
+
+        let mut file = OpenOptions::new().append(true).open(&path).expect("reopen");
+        file.write_all(b"{\"record\":\"rename\",\"run\":1,\"from\":\"a").expect("half a line");
+        drop(file);
+
+        assert_eq!(Journal::renames(&path, 1).expect("renames").len(), 1);
+    }
+}

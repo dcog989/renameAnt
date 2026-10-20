@@ -1,0 +1,31 @@
+[package]
+name = "renameant-gui"
+version.workspace = true
+edition.workspace = true
+# egui 0.37 needs 1.95. The workspace floor of 1.85 would make the MSRV-aware
+# resolver pick an ancient eframe instead of the one this crate asks for.
+rust-version = "1.99"
+description = "renameAnt desktop app: rule pipeline, before/after preview, apply and undo."
+repository.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "renameant-gui"
+path = "src/main.rs"
+
+[dependencies]
+renameant-core.workspace = true
+
+eframe.workspace = true
+egui.workspace = true
+egui_extras.workspace = true
+rfd.workspace = true
+# The rule list is persisted as JSON; `Rule`/`RuleSet` already derive serde.
+serde.workspace = true
+serde_json.workspace = true
+winit.workspace = true
+
+[dev-dependencies]
+# Headless UI driving (AccessKit): the whole window, clicked by label.
+egui_kittest = { version = "0.37", features = ["eframe"] }
+tempfile.workspace = true

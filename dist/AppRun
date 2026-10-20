@@ -1,0 +1,4 @@
+#!/bin/sh
+# renameAnt AppRun: the window is the entry point.
+here="${APPDIR:-$(dirname "$(readlink -f "$0")")}"
+exec "$here/usr/bin/renameant-gui" "$@"

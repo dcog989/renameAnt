@@ -1,0 +1,5 @@
+# The project's style is compact: a struct literal, `if`, or chain that fits in
+# 100 columns stays on one line. rustfmt's default heuristics break those up, so
+# they are turned off; without this file `cargo fmt` rewrites every file.
+max_width = 100
+use_small_heuristics = "Max"
