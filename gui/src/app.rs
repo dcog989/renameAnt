@@ -37,6 +37,9 @@ const FILTER_FIELD_WIDTH: f32 = 340.0;
 const TOP_ROW_HEIGHT: f32 = 32.0;
 /// The primary action, deliberately larger than every other button.
 const ACTION_TEXT_SIZE: f32 = 20.0;
+/// The narrowest a modal gets, so a short report does not squeeze its text into
+/// a column.
+const OVERLAY_WIDTH: f32 = 520.0;
 /// Only used when neither XDG_STATE_HOME nor HOME is set.
 const FALLBACK_JOURNAL: &str = "renameant-journal.jsonl";
 /// Only used when neither XDG_CONFIG_HOME nor HOME is set.
@@ -429,7 +432,7 @@ impl App {
             ui.colored_label(WARNING, format!("{not_nfc} not NFC"));
         }
         if let Some(error) = &self.model.error {
-            ui.colored_label(DANGER, format!("error: {error}"));
+            ui.colored_label(WARNING, format!("warning: {error}"));
         }
     }
 
@@ -561,6 +564,7 @@ impl App {
         };
         let mut keep = true;
         let modal = egui::Modal::new(egui::Id::unique("renameant-overlay")).show(ctx, |ui| {
+            ui.set_min_width(OVERLAY_WIDTH);
             let choice = match &overlay {
                 Overlay::ConfirmApply => {
                     dialogs::confirm_apply(ui, &self.model, self.overwrite, self.fast)

@@ -8,8 +8,8 @@ use egui::{Color32, DragValue, Frame, RichText, Stroke, Ui};
 use renameant_core::rule::Target;
 
 use crate::edit::{
-    CASE_STYLES, InsertKind, NORMALIZE_OPS, RuleEdit, RuleKind, case_label, default_rules,
-    target_label,
+    CASE_STYLES, InsertKind, NORMALIZE_OPS, NumberPlace, RuleEdit, RuleKind, case_label,
+    default_rules, target_label,
 };
 
 /// The add-rule row drawn under the list; the list leaves it this much room.
@@ -17,10 +17,10 @@ const ADD_MENU_HEIGHT: f32 = 34.0;
 /// Never shrink the list below this, however short the panel is.
 const MIN_LIST_HEIGHT: f32 = 120.0;
 const FIELD_WIDTH: f32 = 120.0;
-const NUMBER_FIELD_WIDTH: f32 = 90.0;
+/// Vertical gap between the lines of one wrapped field row.
 const ICON_SIZE: f32 = 30.0;
 /// Border width of an on rule's card.
-const CARD_BORDER_WIDTH: f32 = 1.0;
+const CARD_BORDER_WIDTH: f32 = 1.5;
 /// Upper bounds keep a drag from producing a name that cannot exist anyway.
 const MAX_COUNT: u64 = 10_000;
 const MAX_STEP: u64 = 1_000_000;
@@ -82,7 +82,7 @@ pub fn show(ui: &mut Ui, edits: &mut Vec<RuleEdit>) {
 fn card_frame(ui: &Ui, enabled: bool) -> Frame {
     let frame = crate::style::group_frame(ui.style());
     if enabled {
-        frame.stroke(Stroke::new(CARD_BORDER_WIDTH, crate::style::ACCENT))
+        frame.stroke(Stroke::new(CARD_BORDER_WIDTH, crate::style::ACCENT_BRIGHT))
     } else {
         frame
     }
@@ -99,7 +99,7 @@ fn card(
     // The frame sizes to its content, so pin the content to the column width to
     // make the card fill it.
     ui.set_min_width(ui.available_width());
-    let color = if edit.enabled { crate::style::ACCENT_LIGHT } else { OFF };
+    let color = if edit.enabled { crate::style::ACCENT_BRIGHT } else { OFF };
     ui.horizontal(|ui| {
         let toggle = ui
             .add(
@@ -111,26 +111,20 @@ fn card(
         if toggle.clicked() {
             edit.enabled = !edit.enabled;
         }
-        ui.label(RichText::new(edit.kind.label()).color(color).size(16.0));
-        if ui
-            .add_enabled(index > 0, egui::Button::new(RichText::new("▲").monospace()).frame(false))
-            .on_hover_text("move up")
-            .accessible_name(name(index, "move up"))
-            .clicked()
-        {
-            *move_to = Some((index, index - 1));
-        }
-        if ui
-            .add_enabled(
-                index + 1 < count,
-                egui::Button::new(RichText::new("▼").monospace()).frame(false),
+        let title = ui
+            .add(
+                egui::Label::new(RichText::new(edit.kind.label()).color(color).size(16.0))
+                    .wrap_mode(egui::TextWrapMode::Extend)
+                    .sense(egui::Sense::click()),
             )
-            .on_hover_text("move down")
-            .accessible_name(name(index, "move down"))
-            .clicked()
-        {
-            *move_to = Some((index, index + 1));
+            .on_hover_text("turn this rule on or off");
+        if crate::style::pointer(title).clicked() {
+            edit.enabled = !edit.enabled;
         }
+        crate::style::pointer(ui.add(egui::Checkbox::without_text(&mut edit.enabled)))
+            .on_hover_text("turn this rule on or off")
+            .accessible_name(name(index, "enabled"));
+
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if !edit.builtin
                 && ui
@@ -140,6 +134,28 @@ fn card(
                     .clicked()
             {
                 *remove = Some(index);
+            }
+            if ui
+                .add_enabled(
+                    index + 1 < count,
+                    egui::Button::new(RichText::new("▼").monospace()).frame(false),
+                )
+                .on_hover_text("move down")
+                .accessible_name(name(index, "move down"))
+                .clicked()
+            {
+                *move_to = Some((index, index + 1));
+            }
+            if ui
+                .add_enabled(
+                    index > 0,
+                    egui::Button::new(RichText::new("▲").monospace()).frame(false),
+                )
+                .on_hover_text("move up")
+                .accessible_name(name(index, "move up"))
+                .clicked()
+            {
+                *move_to = Some((index, index - 1));
             }
         });
     });
@@ -158,7 +174,7 @@ fn add_menu(ui: &mut Ui, edits: &mut Vec<RuleEdit>) {
                 }
             }
         });
-        if ui.button("Clear").clicked() {
+        if ui.button("Reset").clicked() {
             *edits = default_rules();
         }
         ui.label(format!("{} rules, applied in order", edits.len()));
@@ -172,31 +188,39 @@ fn name(index: usize, field: &str) -> String {
     format!("rule {} {field}", index + 1)
 }
 
+/// A field label that never wraps inside itself: in a wrapping row it has to
+/// move to the next line as a whole, or the row above overlaps it.
+fn label(ui: &mut Ui, text: &str) {
+    ui.add(egui::Label::new(text).wrap_mode(egui::TextWrapMode::Extend));
+}
+
 fn fields(ui: &mut Ui, index: usize, edit: &mut RuleEdit) {
     ui.horizontal_wrapped(|ui| {
-        target_combo(ui, index, edit);
+        if edit.kind != RuleKind::Number {
+            target_combo(ui, index, edit);
+        }
         match edit.kind {
             RuleKind::Replace => {
                 crate::style::pointer(ui.checkbox(&mut edit.regex, "regex"));
-                ui.label(if edit.regex { "pattern" } else { "find" });
+                label(ui, if edit.regex { "pattern" } else { "find" });
                 crate::style::field(ui, &mut edit.value, FIELD_WIDTH)
                     .accessible_name(name(index, "find"));
-                ui.label("replace");
+                label(ui, "replace");
                 crate::style::field(ui, &mut edit.replacement, FIELD_WIDTH)
                     .accessible_name(name(index, "replace"));
             }
             RuleKind::Remove => {
-                ui.label("from");
+                label(ui, "from");
                 ui.add(DragValue::new(&mut edit.remove_start).range(0..=MAX_COUNT))
                     .accessible_name(name(index, "from character"));
-                ui.label("to");
+                label(ui, "to");
                 ui.add(DragValue::new(&mut edit.remove_end).range(0..=MAX_COUNT))
                     .accessible_name(name(index, "to character"));
             }
             RuleKind::Trim => {
                 ui.add(DragValue::new(&mut edit.count).range(0..=MAX_COUNT))
                     .accessible_name(name(index, "characters"));
-                ui.label("characters from the end");
+                label(ui, "characters from the end");
             }
             RuleKind::Insert => {
                 crate::style::pointer(
@@ -213,24 +237,29 @@ fn fields(ui: &mut Ui, index: usize, edit: &mut RuleEdit) {
                 crate::style::field(ui, &mut edit.value, FIELD_WIDTH)
                     .accessible_name(name(index, "text"));
                 if edit.insert == InsertKind::Position {
-                    ui.label("at");
+                    label(ui, "at");
                     ui.add(DragValue::new(&mut edit.at).range(0..=MAX_COUNT))
                         .accessible_name(name(index, "position"));
                 }
             }
             RuleKind::Number => {
-                ui.label("prefix");
-                crate::style::field(ui, &mut edit.number_prefix, NUMBER_FIELD_WIDTH)
-                    .accessible_name(name(index, "prefix"));
-                ui.label("suffix");
-                crate::style::field(ui, &mut edit.number_suffix, NUMBER_FIELD_WIDTH)
-                    .accessible_name(name(index, "suffix"));
-                ui.label("start");
+                crate::style::pointer(
+                    egui::ComboBox::from_id_salt(("number place", index))
+                        .selected_text(edit.number_place.label())
+                        .show_ui(ui, |ui| {
+                            for place in NumberPlace::ALL {
+                                ui.selectable_value(&mut edit.number_place, place, place.label());
+                            }
+                        })
+                        .response,
+                )
+                .accessible_name(name(index, "where"));
+                label(ui, "start");
                 ui.add(DragValue::new(&mut edit.start)).accessible_name(name(index, "start"));
-                ui.label("step");
+                label(ui, "step");
                 ui.add(DragValue::new(&mut edit.step).range(1..=MAX_STEP))
                     .accessible_name(name(index, "step"));
-                ui.label("digits");
+                label(ui, "digits");
                 ui.add(DragValue::new(&mut edit.pad).range(1..=MAX_PAD))
                     .accessible_name(name(index, "digits"));
             }

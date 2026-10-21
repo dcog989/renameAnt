@@ -170,7 +170,7 @@ pub(crate) fn file_name_of(path: &Path) -> &OsStr {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rule::{CaseStyle, InsertRemoveOp, Rule, Target};
+    use crate::rule::{CaseStyle, InsertRemoveOp, Rule, SequencePlace, Target};
     use crate::scan::{Kind, scan_dir, scan_tree};
     use std::collections::BTreeSet;
     use std::ffi::OsString;
@@ -359,8 +359,7 @@ mod tests {
                 start: 1,
                 step: 1,
                 pad: 2,
-                prefix: Vec::new(),
-                suffix: Vec::new(),
+                place: SequencePlace::Replace,
                 target: Target::Stem,
             }],
         );
@@ -446,8 +445,7 @@ mod tests {
                 start: 1,
                 step: 1,
                 pad: 2,
-                prefix: Vec::new(),
-                suffix: Vec::new(),
+                place: SequencePlace::Replace,
                 target: Target::Stem,
             }],
         );
@@ -496,8 +494,7 @@ mod tests {
                     start: 1,
                     step: 1,
                     pad: 6,
-                    prefix: Vec::new(),
-                    suffix: Vec::new(),
+                    place: SequencePlace::Replace,
                     target: Target::Stem,
                 }],
             ),
@@ -522,8 +519,7 @@ mod tests {
                         start: 1,
                         step: 1,
                         pad: 6,
-                        prefix: Vec::new(),
-                        suffix: Vec::new(),
+                        place: SequencePlace::Replace,
                         target: Target::Stem,
                     },
                 ],

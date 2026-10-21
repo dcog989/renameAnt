@@ -4,7 +4,7 @@
 //! its kind never throws away what is already typed. One kind is one card the
 //! user sees; a kind may pick a different `Rule` variant from its settings.
 
-use renameant_core::rule::{CaseStyle, InsertRemoveOp, NormalizeOp, Rule, Target};
+use renameant_core::rule::{CaseStyle, InsertRemoveOp, NormalizeOp, Rule, SequencePlace, Target};
 
 /// The normalisations the editor offers, in the order `Normalize` applies them.
 pub const NORMALIZE_OPS: [(NormalizeOp, &str); 5] = [
@@ -64,6 +64,36 @@ impl RuleKind {
     }
 }
 
+/// What a number rule does with the number.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NumberPlace {
+    Prefix,
+    Suffix,
+    Whole,
+    Stem,
+    Extension,
+}
+
+impl NumberPlace {
+    pub const ALL: [NumberPlace; 5] = [
+        NumberPlace::Prefix,
+        NumberPlace::Suffix,
+        NumberPlace::Whole,
+        NumberPlace::Stem,
+        NumberPlace::Extension,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            NumberPlace::Prefix => "as prefix",
+            NumberPlace::Suffix => "as suffix",
+            NumberPlace::Whole => "replace whole name",
+            NumberPlace::Stem => "replace stem",
+            NumberPlace::Extension => "replace extension",
+        }
+    }
+}
+
 /// Where a text rule puts its text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InsertKind {
@@ -73,8 +103,7 @@ pub enum InsertKind {
 }
 
 impl InsertKind {
-    pub const ALL: [InsertKind; 3] =
-        [InsertKind::Prefix, InsertKind::Suffix, InsertKind::Position];
+    pub const ALL: [InsertKind; 3] = [InsertKind::Prefix, InsertKind::Suffix, InsertKind::Position];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -115,8 +144,7 @@ pub struct RuleEdit {
     pub start: u64,
     pub step: u64,
     pub pad: u64,
-    pub number_prefix: String,
-    pub number_suffix: String,
+    pub number_place: NumberPlace,
     pub normalize: [bool; NORMALIZE_OPS.len()],
 }
 
@@ -140,8 +168,7 @@ impl Default for RuleEdit {
             start: 1,
             step: 1,
             pad: 3,
-            number_prefix: String::new(),
-            number_suffix: String::new(),
+            number_place: NumberPlace::Stem,
             normalize: [false; NORMALIZE_OPS.len()],
         }
     }
@@ -200,14 +227,22 @@ impl RuleEdit {
                 },
                 target: self.target,
             },
-            RuleKind::Number => Rule::Sequence {
-                start: self.start,
-                step: self.step,
-                pad: self.pad as usize,
-                prefix: self.number_prefix.clone().into_bytes(),
-                suffix: self.number_suffix.clone().into_bytes(),
-                target: self.target,
-            },
+            RuleKind::Number => {
+                let (place, target) = match self.number_place {
+                    NumberPlace::Prefix => (SequencePlace::Prefix, Target::Whole),
+                    NumberPlace::Suffix => (SequencePlace::Suffix, Target::Stem),
+                    NumberPlace::Whole => (SequencePlace::Replace, Target::Whole),
+                    NumberPlace::Stem => (SequencePlace::Replace, Target::Stem),
+                    NumberPlace::Extension => (SequencePlace::Replace, Target::Ext),
+                };
+                Rule::Sequence {
+                    start: self.start,
+                    step: self.step,
+                    pad: self.pad as usize,
+                    place,
+                    target,
+                }
+            }
             RuleKind::Case => Rule::Case { style: self.case, target: self.target },
             RuleKind::Normalize => Rule::Normalize {
                 ops: NORMALIZE_OPS
@@ -280,14 +315,18 @@ impl RuleEdit {
                     }
                 }
             }
-            Rule::Sequence { start, step, pad, prefix, suffix, target } => {
+            Rule::Sequence { start, step, pad, place, target } => {
                 edit.kind = RuleKind::Number;
+                edit.number_place = match (*place, *target) {
+                    (SequencePlace::Prefix, _) => NumberPlace::Prefix,
+                    (SequencePlace::Suffix, _) => NumberPlace::Suffix,
+                    (SequencePlace::Replace, Target::Whole) => NumberPlace::Whole,
+                    (SequencePlace::Replace, Target::Ext) => NumberPlace::Extension,
+                    (SequencePlace::Replace, Target::Stem) => NumberPlace::Stem,
+                };
                 edit.start = *start;
                 edit.step = *step;
                 edit.pad = *pad as u64;
-                edit.number_prefix = String::from_utf8_lossy(prefix).into_owned();
-                edit.number_suffix = String::from_utf8_lossy(suffix).into_owned();
-                edit.target = *target;
             }
             Rule::Normalize { ops, target } => {
                 edit.kind = RuleKind::Normalize;
@@ -391,12 +430,20 @@ mod tests {
         });
         round_trips(RuleEdit {
             kind: RuleKind::Number,
+            number_place: NumberPlace::Suffix,
             start: 5,
             step: 2,
             pad: 4,
-            number_prefix: "n".into(),
-            number_suffix: "x".into(),
-            target: Target::Stem,
+            ..RuleEdit::default()
+        });
+        round_trips(RuleEdit {
+            kind: RuleKind::Number,
+            number_place: NumberPlace::Prefix,
+            ..RuleEdit::default()
+        });
+        round_trips(RuleEdit {
+            kind: RuleKind::Number,
+            number_place: NumberPlace::Extension,
             ..RuleEdit::default()
         });
         round_trips(RuleEdit {
@@ -444,9 +491,6 @@ mod tests {
             true,
             false,
         );
-        assert_eq!(
-            (loaded.kind, loaded.remove_start, loaded.remove_end),
-            (RuleKind::Remove, 0, 3)
-        );
+        assert_eq!((loaded.kind, loaded.remove_start, loaded.remove_end), (RuleKind::Remove, 0, 3));
     }
 }

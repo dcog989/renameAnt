@@ -28,6 +28,8 @@ const HEADER_PADDING: Margin = Margin::symmetric(12, 8);
 pub const ACCENT: Color32 = Color32::from_rgb(48, 127, 134);
 /// The outline on a focused or selected widget: the accent lifted for contrast.
 pub const ACCENT_LIGHT: Color32 = Color32::from_rgb(150, 210, 215);
+/// The accent lifted further and pushed to full chroma, for a rule that is on.
+pub const ACCENT_BRIGHT: Color32 = Color32::from_rgb(80, 218, 228);
 /// Width of a focus outline.
 const FOCUS_WIDTH: f32 = 1.0;
 /// The panel title bars: the accent at low strength, so it reads as a tint

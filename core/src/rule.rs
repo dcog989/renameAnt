@@ -41,6 +41,19 @@ pub enum CaseStyle {
     Pascal,
 }
 
+/// Where a sequence rule puts the number.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SequencePlace {
+    /// Before the selected part.
+    Prefix,
+    /// After the selected part.
+    Suffix,
+    /// In place of the selected part.
+    #[default]
+    Replace,
+}
+
 /// Byte fields carry base64 in JSON, because a JSON string cannot hold an
 /// arbitrary name.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,7 +75,10 @@ pub enum InsertRemoveOp {
     },
     /// Drop the characters in `start..end`, clamped to the selection. UTF-8
     /// names only.
-    RemoveRange { start: usize, end: usize },
+    RemoveRange {
+        start: usize,
+        end: usize,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -103,10 +119,8 @@ pub enum Rule {
         start: u64,
         step: u64,
         pad: usize,
-        #[serde(default, with = "crate::bytes_serde")]
-        prefix: Vec<u8>,
-        #[serde(default, with = "crate::bytes_serde")]
-        suffix: Vec<u8>,
+        #[serde(default)]
+        place: SequencePlace,
         target: Target,
     },
     Normalize {
@@ -128,19 +142,17 @@ pub(crate) const MAX_SEQUENCE_PAD: usize = 255;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RuleError {
-    #[error("rule {index}: invalid regex /{pattern}/: {source}")]
+    #[error("replace rule has an invalid pattern: {source}")]
     Regex {
-        index: usize,
-        pattern: String,
         #[source]
         source: regex::Error,
     },
-    #[error("rule {index}: literal `find` is empty, so the rule can never match")]
-    EmptyLiteral { index: usize },
-    #[error("rule {index}: sequence `step` is zero, so every name gets the same number")]
-    ZeroStep { index: usize },
-    #[error("rule {index}: sequence `pad` is {pad}, above the maximum of {max}")]
-    PadTooLarge { index: usize, pad: usize, max: usize },
+    #[error("replace rule is active but has no matching values for this list.")]
+    EmptyLiteral,
+    #[error("number rule is active but its step is zero, so every name gets the same number")]
+    ZeroStep,
+    #[error("number rule is active with {pad} digits; the most is {max}")]
+    PadTooLarge { pad: usize, max: usize },
 }
 
 /// A rule with its regex built once per plan call, never per item.
@@ -149,14 +161,7 @@ enum CompiledRule {
     Literal { find: Vec<u8>, replace: Vec<u8>, target: Target },
     Case { style: CaseStyle, target: Target },
     InsertRemove { op: InsertRemoveOp, target: Target },
-    Sequence {
-        start: u64,
-        step: u64,
-        pad: usize,
-        prefix: Vec<u8>,
-        suffix: Vec<u8>,
-        target: Target,
-    },
+    Sequence { start: u64, step: u64, pad: usize, place: SequencePlace, target: Target },
     Normalize { ops: Vec<NormalizeOp>, target: Target },
 }
 
@@ -169,20 +174,16 @@ pub(crate) struct CompiledRuleSet {
 impl RuleSet {
     pub(crate) fn compile(&self) -> Result<CompiledRuleSet, RuleError> {
         let mut rules = Vec::with_capacity(self.rules.len());
-        for (index, rule) in self.rules.iter().enumerate() {
+        for rule in &self.rules {
             rules.push(match rule {
                 Rule::Regex { pattern, replacement, target } => CompiledRule::Regex {
-                    re: Regex::new(pattern).map_err(|source| RuleError::Regex {
-                        index,
-                        pattern: pattern.clone(),
-                        source,
-                    })?,
+                    re: Regex::new(pattern).map_err(|source| RuleError::Regex { source })?,
                     replacement: replacement.clone(),
                     target: *target,
                 },
                 Rule::Literal { find, replace, target } => {
                     if find.is_empty() {
-                        return Err(RuleError::EmptyLiteral { index });
+                        return Err(RuleError::EmptyLiteral);
                     }
                     CompiledRule::Literal {
                         find: find.clone(),
@@ -196,23 +197,18 @@ impl RuleSet {
                 Rule::InsertRemove { op, target } => {
                     CompiledRule::InsertRemove { op: op.clone(), target: *target }
                 }
-                Rule::Sequence { start, step, pad, prefix, suffix, target } => {
+                Rule::Sequence { start, step, pad, place, target } => {
                     if *step == 0 {
-                        return Err(RuleError::ZeroStep { index });
+                        return Err(RuleError::ZeroStep);
                     }
                     if *pad > MAX_SEQUENCE_PAD {
-                        return Err(RuleError::PadTooLarge {
-                            index,
-                            pad: *pad,
-                            max: MAX_SEQUENCE_PAD,
-                        });
+                        return Err(RuleError::PadTooLarge { pad: *pad, max: MAX_SEQUENCE_PAD });
                     }
                     CompiledRule::Sequence {
                         start: *start,
                         step: *step,
                         pad: *pad,
-                        prefix: prefix.clone(),
-                        suffix: suffix.clone(),
+                        place: *place,
                         target: *target,
                     }
                 }
@@ -380,7 +376,7 @@ impl CompiledRule {
                     }
                     CaseStyle::Pascal => {
                         for word in split_words(text) {
-                            push_capitalized(out, &word);
+                            push_capitalized(out, word);
                         }
                     }
                 }
@@ -409,7 +405,13 @@ impl CompiledRule {
                     let Ok(text) = std::str::from_utf8(sel) else {
                         return false;
                     };
-                    let keep = text.char_indices().rev().nth(*count).map_or(0, |(at, _)| at);
+                    // The first character that stays is the one before the last
+                    // `count`; `nth(0)` is the last character itself.
+                    let keep = if *count == 0 {
+                        text.len()
+                    } else {
+                        text.char_indices().rev().nth(*count - 1).map_or(0, |(at, _)| at)
+                    };
                     out.extend_from_slice(&text.as_bytes()[..keep]);
                     true
                 }
@@ -429,23 +431,28 @@ impl CompiledRule {
                         return false;
                     };
                     let len = selection.len();
-                    let from =
-                        selection.char_indices().nth(*start).map_or(len, |(at, _)| at);
-                    let to = selection
-                        .char_indices()
-                        .nth(*end)
-                        .map_or(len, |(at, _)| at)
-                        .max(from);
+                    let from = selection.char_indices().nth(*start).map_or(len, |(at, _)| at);
+                    let to = selection.char_indices().nth(*end).map_or(len, |(at, _)| at).max(from);
                     out.extend_from_slice(&selection.as_bytes()[..from]);
                     out.extend_from_slice(&selection.as_bytes()[to..]);
                     true
                 }
             },
-            CompiledRule::Sequence { start, step, pad, prefix, suffix, .. } => {
+            CompiledRule::Sequence { start, step, pad, place, .. } => {
                 let number = start.saturating_add(step.saturating_mul(rank as u64));
-                out.extend_from_slice(prefix);
-                let _ = write!(out, "{number:0width$}", width = *pad);
-                out.extend_from_slice(suffix);
+                match place {
+                    SequencePlace::Prefix => {
+                        let _ = write!(out, "{number:0width$}", width = *pad);
+                        out.extend_from_slice(sel);
+                    }
+                    SequencePlace::Suffix => {
+                        out.extend_from_slice(sel);
+                        let _ = write!(out, "{number:0width$}", width = *pad);
+                    }
+                    SequencePlace::Replace => {
+                        let _ = write!(out, "{number:0width$}", width = *pad);
+                    }
+                }
                 true
             }
             CompiledRule::Normalize { ops, .. } => {
@@ -517,11 +524,9 @@ fn split_words(text: &str) -> Vec<&str> {
             previous = Some(ch);
             continue;
         }
-        let starts_word = start.is_none()
-            || (ch.is_uppercase() && previous.is_some_and(char::is_lowercase));
-        if starts_word
-            && let Some(from) = start.replace(at)
-        {
+        let starts_word =
+            start.is_none() || (ch.is_uppercase() && previous.is_some_and(char::is_lowercase));
+        if starts_word && let Some(from) = start.replace(at) {
             words.push(&text[from..at]);
         }
         previous = Some(ch);
@@ -625,8 +630,7 @@ mod tests {
             start: 1,
             step: 2,
             pad: 3,
-            prefix: Vec::new(),
-            suffix: Vec::new(),
+            place: SequencePlace::Replace,
             target: Target::Stem,
         }];
         assert_eq!(run_ranked(rules.clone(), "b.txt", 0), "001.txt");
@@ -664,6 +668,21 @@ mod tests {
     }
 
     #[test]
+    fn remove_suffix_drops_exactly_the_count() {
+        let trim = |count| {
+            vec![Rule::InsertRemove {
+                op: InsertRemoveOp::RemoveSuffix(count),
+                target: Target::Stem,
+            }]
+        };
+        assert_eq!(run(trim(0), "abcde"), "abcde");
+        assert_eq!(run(trim(1), "abcde"), "abcd");
+        assert_eq!(run(trim(2), "abcde"), "abc");
+        assert_eq!(run(trim(9), "abcde"), "");
+        assert_eq!(run(trim(1), "héllo"), "héll");
+    }
+
+    #[test]
     fn remove_range_drops_the_characters_between_two_positions() {
         let range = |start, end| {
             vec![Rule::InsertRemove {
@@ -692,16 +711,25 @@ mod tests {
     }
 
     #[test]
-    fn sequence_wraps_the_number_in_its_affixes() {
-        let rules = vec![Rule::Sequence {
-            start: 7,
-            step: 1,
-            pad: 2,
-            prefix: b"IMG_".to_vec(),
-            suffix: b"_x".to_vec(),
-            target: Target::Stem,
-        }];
-        assert_eq!(run_ranked(rules, "photo.jpg", 0), "IMG_07_x.jpg");
+    fn sequence_prefix_and_suffix_place_the_number() {
+        let sequence =
+            |place, target| vec![Rule::Sequence { start: 7, step: 1, pad: 2, place, target }];
+        assert_eq!(
+            run_ranked(sequence(SequencePlace::Prefix, Target::Stem), "photo.jpg", 0),
+            "07photo.jpg"
+        );
+        assert_eq!(
+            run_ranked(sequence(SequencePlace::Suffix, Target::Stem), "photo.jpg", 0),
+            "photo07.jpg"
+        );
+        assert_eq!(
+            run_ranked(sequence(SequencePlace::Suffix, Target::Whole), "photo.jpg", 0),
+            "photo.jpg07"
+        );
+        assert_eq!(
+            run_ranked(sequence(SequencePlace::Replace, Target::Stem), "photo.jpg", 0),
+            "07.jpg"
+        );
     }
 
     #[test]
@@ -736,7 +764,7 @@ mod tests {
                 }]
             }
             .compile(),
-            Err(RuleError::EmptyLiteral { .. })
+            Err(RuleError::EmptyLiteral)
         ));
         assert!(matches!(
             RuleSet {
@@ -744,13 +772,12 @@ mod tests {
                     start: 0,
                     step: 0,
                     pad: 0,
-                    prefix: Vec::new(),
-                    suffix: Vec::new(),
+                    place: SequencePlace::Replace,
                     target: Target::Whole,
                 }]
             }
             .compile(),
-            Err(RuleError::ZeroStep { .. })
+            Err(RuleError::ZeroStep)
         ));
         assert!(matches!(
             RuleSet {
@@ -758,8 +785,7 @@ mod tests {
                     start: 0,
                     step: 1,
                     pad: MAX_SEQUENCE_PAD + 1,
-                    prefix: Vec::new(),
-                    suffix: Vec::new(),
+                    place: SequencePlace::Replace,
                     target: Target::Whole
                 }]
             }
