@@ -12,6 +12,12 @@ use serde::{Deserialize, Serialize};
 use unicode_normalization::UnicodeNormalization;
 
 use crate::osname;
+use text::{
+    collapse_spaces, extend_lower, extend_upper, push_capitalized, push_char, push_lower,
+    push_upper, split_words,
+};
+
+mod text;
 
 /// Which part of the name a rule rewrites.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -476,92 +482,6 @@ impl CompiledRule {
             }
         }
     }
-}
-
-/// Uppercase and lowercase map one character to several (`ß` to `SS`), so they
-/// are pushed character by character instead of through a `String`.
-fn extend_upper(out: &mut Vec<u8>, text: &str) {
-    for ch in text.chars() {
-        push_upper(out, ch);
-    }
-}
-
-fn extend_lower(out: &mut Vec<u8>, text: &str) {
-    for ch in text.chars() {
-        push_lower(out, ch);
-    }
-}
-
-fn push_upper(out: &mut Vec<u8>, ch: char) {
-    for upper in ch.to_uppercase() {
-        push_char(out, upper);
-    }
-}
-
-fn push_lower(out: &mut Vec<u8>, ch: char) {
-    for lower in ch.to_lowercase() {
-        push_char(out, lower);
-    }
-}
-
-fn push_char(out: &mut Vec<u8>, ch: char) {
-    let mut buffer = [0u8; 4];
-    out.extend_from_slice(ch.encode_utf8(&mut buffer).as_bytes());
-}
-
-/// The words a case style joins: runs of alphanumerics, split where a lowercase
-/// letter is followed by an uppercase one. `camelCase` is two words, `HTTPServer`
-/// is one.
-fn split_words(text: &str) -> Vec<&str> {
-    let mut words = Vec::new();
-    let mut start: Option<usize> = None;
-    let mut previous: Option<char> = None;
-    for (at, ch) in text.char_indices() {
-        if !ch.is_alphanumeric() {
-            if let Some(from) = start.take() {
-                words.push(&text[from..at]);
-            }
-            previous = Some(ch);
-            continue;
-        }
-        let starts_word =
-            start.is_none() || (ch.is_uppercase() && previous.is_some_and(char::is_lowercase));
-        if starts_word && let Some(from) = start.replace(at) {
-            words.push(&text[from..at]);
-        }
-        previous = Some(ch);
-    }
-    if let Some(from) = start {
-        words.push(&text[from..]);
-    }
-    words
-}
-
-fn push_capitalized(out: &mut Vec<u8>, word: &str) {
-    let mut chars = word.chars();
-    if let Some(first) = chars.next() {
-        push_upper(out, first);
-        for ch in chars {
-            push_lower(out, ch);
-        }
-    }
-}
-
-fn collapse_spaces(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut in_space = false;
-    for ch in text.chars() {
-        if ch.is_whitespace() {
-            if !in_space {
-                out.push(' ');
-                in_space = true;
-            }
-        } else {
-            out.push(ch);
-            in_space = false;
-        }
-    }
-    out
 }
 
 #[cfg(test)]
