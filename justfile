@@ -35,3 +35,7 @@ package: build
 # Remove build artifacts.
 clean:
     cargo clean
+
+# Refresh dependencies to the latest allowed versions.
+update:
+    cargo update
