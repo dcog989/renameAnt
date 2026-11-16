@@ -19,11 +19,12 @@ Structure and invariants live in the code and its comments. The layout below is 
 Run from the workspace root:
 
 - Install: `rustup toolchain install stable`
-- Dev: `cargo run -p renameant-gui`
-- Test: `cargo test --workspace`
-- Lint: `cargo clippy --workspace --all-targets -- -D warnings`
-- Format: `cargo fmt --all`
-- Build: `cargo build --release`; AppImage via the `dist/` script
+- Dev: `just run`
+- Check clippy, formatting and tests: `just check`
+- Test: `just test`
+- Lint: `just lint`
+- Format: `just format`
+- Build: `just build`; AppImage: `just package`
 
 ### Common Patterns
 

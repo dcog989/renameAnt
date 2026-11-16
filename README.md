@@ -53,13 +53,10 @@ The window opens when you run `renameant.AppImage` or pick renameAnt from the la
 Requires Rust 1.99+ and `rsvg-convert`.
 
 ```sh
-cargo run -p renameant-gui             # GUI from source
-cargo build --release                  # target/release/renameant-gui
-cargo test --workspace                 # run test suite
-cargo clippy --workspace --all-targets -- -D warnings
-cargo fmt --all                        # format all, walks directories
-
-bash ./dist/build-appimage.sh  # prints dist/out/renameAnt-<version>-x86_64.AppImage
+just run                               # GUI from source
+just check                             # clippy, formatting check, tests
+just build                             # target/release/renameant-gui
+just package                           # prints dist/out/renameAnt-<version>-x86_64.AppImage
 ```
 
 ## License
