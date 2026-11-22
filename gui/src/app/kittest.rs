@@ -26,11 +26,9 @@ pub(super) static ENV: Mutex<()> = Mutex::new(());
 /// instead of trusting a fixed frame count.
 const STEP_SLEEP: Duration = Duration::from_millis(10);
 const MAX_PUMP_STEPS: usize = 600;
-/// The harness window, and the journal panel's default width: the confirmation
-/// is centred, so its Undo sits left of the journal's.
+/// The harness window, wide enough for the rules, the table and the journal.
 const WINDOW_WIDTH: f32 = 1500.0;
 const WINDOW_HEIGHT: f32 = 860.0;
-const BEFORE_JOURNAL: f32 = WINDOW_WIDTH - super::JOURNAL_WIDTH;
 
 pub(super) fn pump_until(
     harness: &mut Harness<'_, App>,
@@ -165,15 +163,17 @@ fn the_window_scans_plans_applies_and_undoes() {
     pump_until(&mut harness, "the rescan after apply", |app| app.overlay.is_none() && !app.busy);
 
     // Undo, through its confirmation: the journal's Undo, then the modal's. The
-    // two share a label, so pick the modal's by sitting left of the journal.
+    // two share a label, so pick the modal's by its place under the
+    // confirmation's heading; the journal's Undo is above the modal.
     assert_eq!(harness.state().sessions.len(), 1);
     harness.get_by_label("Undo").click();
     harness.step();
     assert!(matches!(harness.state().overlay, Some(Overlay::ConfirmUndo(_))));
     pump_for_labels(&mut harness, "Undo", 2);
+    let heading = harness.get_by_label("Undo run 1").rect();
     harness
         .get_all_by_label("Undo")
-        .find(|node| node.rect().center().x < BEFORE_JOURNAL)
+        .find(|node| node.rect().top() > heading.bottom())
         .expect("the confirmation's Undo button")
         .click_accesskit();
     pump_until(&mut harness, "the undo report", |app| {
