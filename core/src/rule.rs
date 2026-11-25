@@ -14,11 +14,12 @@ use jiff::ZonedDateTime;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use unicode_normalization::UnicodeNormalization;
+use unicode_normalization::char::is_combining_mark;
 
 use crate::osname;
 use text::{
-    collapse_spaces, extend_lower, extend_upper, push_capitalized, push_char, push_lower,
-    push_upper, split_words,
+    collapse_spaces, extend_lower, extend_upper, is_word_char, push_capitalized, push_char,
+    push_lower, push_title, split_words,
 };
 
 mod text;
@@ -37,7 +38,9 @@ pub enum Target {
 pub enum CaseStyle {
     Lower,
     Upper,
-    /// First character of every word upper, the rest lower.
+    /// First character of every word upper, the rest lower. An apostrophe
+    /// inside a word does not start a new word, except after a one-letter
+    /// prefix (`O'Brien`).
     Title,
     /// First character of the selection upper, the rest lower.
     Sentence,
@@ -182,12 +185,14 @@ pub enum RuleError {
         #[source]
         source: regex::Error,
     },
-    #[error("replace rule is active but has no matching values for this list.")]
+    #[error("replace rule has an empty find text")]
     EmptyLiteral,
     #[error("number rule is active but its step is zero, so every name gets the same number")]
     ZeroStep,
     #[error("number rule is active with {pad} digits; the most is {max}")]
     PadTooLarge { pad: usize, max: usize },
+    #[error("number rule overflows u64 with {entries} entries; lower its start or step")]
+    SequenceOverflow { entries: usize },
 }
 
 /// A rule with its regex built once per plan call, never per item.
@@ -211,6 +216,9 @@ pub(crate) struct CompiledRuleSet {
 
 impl RuleSet {
     pub(crate) fn compile(&self) -> Result<CompiledRuleSet, RuleError> {
+        // One clock read per compile keeps every Date rule in a preview on the
+        // same stamp.
+        let now = ZonedDateTime::now();
         let mut rules = Vec::with_capacity(self.rules.len());
         for rule in &self.rules {
             rules.push(match rule {
@@ -252,7 +260,7 @@ impl RuleSet {
                     }
                 }
                 Rule::Date { format, place, target } => CompiledRule::Date {
-                    stamp: date_stamp(*format, &ZonedDateTime::now()),
+                    stamp: date_stamp(*format, &now),
                     place: *place,
                     target: *target,
                 },
@@ -270,6 +278,26 @@ impl CompiledRuleSet {
     /// `Sequence` does, so a pipeline without one needs no order taken at all.
     pub(crate) fn needs_rank(&self) -> bool {
         self.rules.iter().any(|rule| matches!(rule, CompiledRule::Sequence { .. }))
+    }
+
+    /// Rejects a Sequence rule whose number would overflow `u64` before the
+    /// last entry. Compile cannot know how many entries the plan has.
+    pub(crate) fn check_ranks(&self, entries: usize) -> Result<(), RuleError> {
+        if entries == 0 {
+            return Ok(());
+        }
+        let last = (entries - 1) as u64;
+        for rule in &self.rules {
+            if let CompiledRule::Sequence { start, step, .. } = rule {
+                let Some(product) = step.checked_mul(last) else {
+                    return Err(RuleError::SequenceOverflow { entries });
+                };
+                if start.checked_add(product).is_none() {
+                    return Err(RuleError::SequenceOverflow { entries });
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Runs the pipeline over one name, in order.
@@ -345,9 +373,7 @@ fn append_replaced(
 ) {
     let mut rest = 0;
     for captures in re.captures_iter(text) {
-        let Some(whole) = captures.get(0) else {
-            continue;
-        };
+        let whole = captures.get(0).expect("capture group 0 always exists");
         out.extend_from_slice(&text.as_bytes()[rest..whole.start()]);
         expansion.clear();
         captures.expand(replacement, expansion);
@@ -448,17 +474,28 @@ impl CompiledRule {
                     CaseStyle::Upper => extend_upper(out, text),
                     CaseStyle::Title => {
                         let mut start_of_word = true;
+                        // One-letter prefixes keep the capital (O'Brien); longer
+                        // words do not (don't).
+                        let mut word_len = 0usize;
                         for ch in text.chars() {
-                            if ch.is_alphanumeric() {
+                            if is_word_char(ch) {
                                 if start_of_word {
-                                    push_upper(out, ch);
+                                    push_title(out, ch);
                                 } else {
                                     push_lower(out, ch);
                                 }
                                 start_of_word = false;
+                                if !is_combining_mark(ch) {
+                                    word_len += 1;
+                                }
+                            } else if ch == '\'' || ch == '’' {
+                                push_char(out, ch);
+                                start_of_word = word_len <= 1;
+                                word_len = 0;
                             } else {
                                 push_char(out, ch);
                                 start_of_word = true;
+                                word_len = 0;
                             }
                         }
                     }
@@ -466,7 +503,7 @@ impl CompiledRule {
                         let mut first = true;
                         for ch in text.chars() {
                             if first && ch.is_alphanumeric() {
-                                push_upper(out, ch);
+                                push_title(out, ch);
                                 first = false;
                             } else {
                                 push_lower(out, ch);
@@ -631,6 +668,27 @@ mod tests {
     }
 
     #[test]
+    fn regex_replacement_matches_replace_all() {
+        let cases = [
+            (r"IMG_(\d+)", "photo-$1", "IMG_1 IMG_22"),
+            (r"\b", "-", "ab cd"),
+            (r"a", "b", "aa"),
+            (r"x", "y", "ab"),
+        ];
+        for (pattern, replacement, text) in cases {
+            let re = Regex::new(pattern).expect("pattern");
+            let mut out = Vec::new();
+            let mut expansion = String::new();
+            append_replaced(&re, replacement, text, &mut out, &mut expansion);
+            assert_eq!(
+                String::from_utf8(out).expect("utf-8"),
+                re.replace_all(text, replacement).to_string(),
+                "pattern {pattern}"
+            );
+        }
+    }
+
+    #[test]
     fn stem_only_rules_leave_the_extension_alone() {
         let rules = vec![Rule::InsertRemove {
             op: InsertRemoveOp::AddPrefix(b"2024-".to_vec()),
@@ -655,6 +713,33 @@ mod tests {
             ),
             "Hello wide world"
         );
+    }
+
+    #[test]
+    fn title_keeps_apostrophes_inside_words() {
+        let title = |name| {
+            run(vec![Rule::Case { style: CaseStyle::Title, target: Target::Whole }], name)
+        };
+        assert_eq!(title("don't stop"), "Don't Stop");
+        assert_eq!(title("O'Brien's file"), "O'Brien's File");
+        assert_eq!(title("rock'n'roll"), "Rock'n'Roll");
+        assert_eq!(title("'tis the season"), "'Tis The Season");
+    }
+
+    #[test]
+    fn title_case_lowercases_extra_uppercase_chars() {
+        let case = |style, name| run(vec![Rule::Case { style, target: Target::Whole }], name);
+        assert_eq!(case(CaseStyle::Title, "ßeta"), "Sseta");
+        assert_eq!(case(CaseStyle::Sentence, "ßETA"), "Sseta");
+        assert_eq!(case(CaseStyle::Pascal, "ßeta"), "Sseta");
+    }
+
+    #[test]
+    fn case_styles_keep_combining_marks() {
+        let case = |style, name| run(vec![Rule::Case { style, target: Target::Stem }], name);
+        assert_eq!(case(CaseStyle::Snake, "cafe\u{301}.txt"), "cafe\u{301}.txt");
+        assert_eq!(case(CaseStyle::Snake, "cafe\u{301}Bar.txt"), "cafe\u{301}_bar.txt");
+        assert_eq!(case(CaseStyle::Title, "cafe\u{301}bar.txt"), "Cafe\u{301}bar.txt");
     }
 
     #[test]

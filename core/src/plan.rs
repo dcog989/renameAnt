@@ -88,6 +88,7 @@ pub fn plan<E: Borrow<Entry>>(
     rules: &RuleSet,
 ) -> Result<Plan, RuleError> {
     let mut compiled = rules.compile()?;
+    compiled.check_ranks(entries.len())?;
 
     // `Sequence` consumes entries in name order, taken before the pipeline runs
     // and independent of filesystem walk order. In a recursive scan
@@ -164,7 +165,7 @@ pub(crate) fn file_name_of(path: &Path) -> &OsStr {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rule::{CaseStyle, InsertRemoveOp, Rule, SequencePlace, Target};
+    use crate::rule::{CaseStyle, InsertRemoveOp, Rule, RuleError, SequencePlace, Target};
     use crate::scan::{Kind, scan_dir, scan_tree};
     use std::collections::BTreeSet;
     use std::ffi::OsString;
@@ -451,6 +452,27 @@ mod tests {
         assert_eq!(dst_of(&plan, "a.txt"), OsStr::new("01.txt"));
         assert_eq!(dst_of(&plan, "sub"), OsStr::new("02"));
         assert_eq!(row_at(&plan, temp.path(), "sub/b.txt").dst, sub.join("03.txt"));
+    }
+
+    #[test]
+    fn a_sequence_that_overflows_is_an_error() {
+        let temp = tempfile::tempdir().unwrap();
+        write(temp.path(), &["a", "b", "c"]);
+        let (entries, index) = scan_dir(temp.path()).expect("scan");
+        let rules = RuleSet {
+            rules: vec![Rule::Sequence {
+                start: u64::MAX - 1,
+                step: 1,
+                pad: 0,
+                place: SequencePlace::Replace,
+                target: Target::Stem,
+            }],
+        };
+
+        assert!(matches!(
+            plan(&entries, &index, &rules),
+            Err(RuleError::SequenceOverflow { .. })
+        ));
     }
 
     /// The only claim that needs a number rather than a check: 100k entries,
