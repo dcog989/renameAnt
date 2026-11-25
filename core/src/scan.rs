@@ -39,7 +39,7 @@ pub struct Entry {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DirIndex {
     /// Write through `insert`, not directly: the folded view is built with it.
-    pub existing: BTreeMap<PathBuf, BTreeSet<OsString>>,
+    existing: BTreeMap<PathBuf, BTreeSet<OsString>>,
     /// The same names folded for a case-insensitive comparison, built with
     /// `existing` so a plan does not rebuild them.
     folded: BTreeMap<PathBuf, BTreeSet<Vec<u8>>>,

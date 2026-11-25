@@ -3,6 +3,8 @@
 //!
 //! Names stay `OsStr`/`&[u8]` end to end. Nothing here converts a name lossily.
 
+use std::cmp::Ordering;
+
 use unicode_normalization::UnicodeNormalization;
 
 use crate::plan::InvalidKind;
@@ -80,6 +82,27 @@ pub fn is_nfc(name: &[u8]) -> bool {
     text.chars().eq(text.nfc())
 }
 
+/// Compares two names the way a case-insensitive mount would: Unicode lower
+/// case for UTF-8, ASCII only for bytes that are not text. Names that are not
+/// UTF-8 sort apart from text, so the two classes never compare as one.
+///
+/// This is the allocation-free form of [`case_fold`]; the two must agree.
+pub(crate) fn folded_order(left: &[u8], right: &[u8]) -> Ordering {
+    match (std::str::from_utf8(left), std::str::from_utf8(right)) {
+        (Ok(left), Ok(right)) => left
+            .chars()
+            .flat_map(char::to_lowercase)
+            .cmp(right.chars().flat_map(char::to_lowercase)),
+        (Ok(_), Err(_)) => Ordering::Less,
+        (Err(_), Ok(_)) => Ordering::Greater,
+        (Err(_), Err(_)) => {
+            let left = left.iter().map(|byte| byte.to_ascii_lowercase());
+            let right = right.iter().map(|byte| byte.to_ascii_lowercase());
+            left.cmp(right)
+        }
+    }
+}
+
 /// A name folded for comparison on a case-insensitive mount: Unicode lower
 /// case for UTF-8, ASCII only for bytes that are not text.
 ///
@@ -96,7 +119,7 @@ pub(crate) fn case_fold(name: &[u8]) -> Vec<u8> {
 /// destination may sit on a case-insensitive mount, so such a row is staged
 /// through a temp name instead of a direct `RENAME_NOREPLACE`.
 pub fn is_case_only(src: &[u8], dst: &[u8]) -> bool {
-    src != dst && (src.eq_ignore_ascii_case(dst) || case_fold(src) == case_fold(dst))
+    src != dst && folded_order(src, dst) == Ordering::Equal
 }
 
 /// Plan-time validation: a bad destination is an `Invalid` row up
@@ -187,6 +210,26 @@ mod tests {
         assert!(!is_case_only("Ärger.txt".as_bytes(), "Arger.txt".as_bytes()));
         // Non-UTF-8 bytes can only fold ASCII, but that still counts.
         assert!(is_case_only(b"CAF\xe9", b"caf\xe9"));
+    }
+
+    #[test]
+    fn folded_order_agrees_with_case_fold() {
+        let pairs: [(&[u8], &[u8]); 5] = [
+            (b"readme", b"README"),
+            ("Ärger".as_bytes(), "ärger".as_bytes()),
+            (b"caf\xe9", b"CAF\xe9"),
+            (b"cafe", b"caf\xe9"),
+            (b"a", b"b"),
+        ];
+        for (left, right) in pairs {
+            assert_eq!(
+                folded_order(left, right) == Ordering::Equal,
+                case_fold(left) == case_fold(right),
+                "{} vs {}",
+                String::from_utf8_lossy(left),
+                String::from_utf8_lossy(right)
+            );
+        }
     }
 
     #[test]

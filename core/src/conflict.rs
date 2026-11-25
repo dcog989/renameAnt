@@ -40,8 +40,16 @@ pub(crate) fn resolve(rows: &mut [PlanRow], index: &DirIndex) {
     // that `mark_target_exists` marks is settled afterwards by
     // `propagate_blocked`, which spreads that mark up the chain.
     let sources = sources_of(rows, &status, &targets.by_name);
-    mark_target_exists(rows, &mut status, &targets, &sources, &dirs);
-    let blocker = blockers(rows, &status, &targets, &sources);
+    let folded_blocker = mark_target_exists(rows, &mut status, &targets, &sources, &dirs);
+    let mut blocker = blockers(rows, &status, &targets, &sources);
+    // A folded match is a dependency too: the row leaving the name runs first,
+    // which is what lets a planned `FOO` follow an on-disk `foo` that is being
+    // renamed away. Exact matches were already recorded by `blockers`.
+    for (row, folded) in folded_blocker.into_iter().enumerate() {
+        if blocker[row].is_none() {
+            blocker[row] = folded;
+        }
+    }
     propagate_blocked(&mut status, &blocker);
 
     mark_case_only_renames(rows, &status);
@@ -76,27 +84,9 @@ impl Destination<'_> {
     /// The same, with names folded to lower case: the order that puts names
     /// differing only by case side by side.
     fn compare_folded(left: &Self, right: &Self) -> Ordering {
-        left.dir.cmp(&right.dir).then_with(|| folded_order(left.name, right.name))
-    }
-}
-
-/// Name order ignoring case. UTF-8 names fold by Unicode lower case; names
-/// that are not UTF-8 fold ASCII only and sort apart, so the two classes never
-/// compare as one.
-fn folded_order(left: &OsStr, right: &OsStr) -> Ordering {
-    match (std::str::from_utf8(left.as_bytes()), std::str::from_utf8(right.as_bytes())) {
-        (Ok(left), Ok(right)) => left
-            .chars()
-            .flat_map(char::to_lowercase)
-            .cmp(right.chars().flat_map(char::to_lowercase)),
-        (Ok(_), Err(_)) => Ordering::Less,
-        (Err(_), Ok(_)) => Ordering::Greater,
-        (Err(_), Err(_)) => {
-            let (left, right) = (left.as_bytes(), right.as_bytes());
-            let left = left.iter().map(|byte| byte.to_ascii_lowercase());
-            let right = right.iter().map(|byte| byte.to_ascii_lowercase());
-            left.cmp(right)
-        }
+        left.dir
+            .cmp(&right.dir)
+            .then_with(|| osname::folded_order(left.name.as_bytes(), right.name.as_bytes()))
     }
 }
 
@@ -204,15 +194,23 @@ fn mark_collisions(status: &mut [Status], targets: &mut Targets<'_>) {
 /// name is only "already there" in its own directory.
 ///
 /// The scan's names for a directory and that directory's destinations are both
-/// sorted, so they are walked together rather than looked up one by one.
+/// sorted, so they are walked together rather than looked up one by one. The
+/// folded names are not sorted the same way, so each directory's sources are
+/// folded once into a map; that is also what tells a destination its name is
+/// being freed under a different case.
+///
+/// Returns the folded vacator of every row that stayed `Ok`, so `resolve` can
+/// fold it into the apply dependencies.
 fn mark_target_exists(
     rows: &[PlanRow],
     status: &mut [Status],
     targets: &Targets<'_>,
     sources: &[Destination<'_>],
     dirs: &Directories<'_>,
-) {
+) -> Vec<Option<usize>> {
+    let mut folded_blocker: Vec<Option<usize>> = vec![None; rows.len()];
     let mut source = 0;
+    let mut source_start = 0;
     let mut at = 0;
     while at < targets.by_name.len() {
         let dir = targets.by_name[at].dir;
@@ -224,6 +222,21 @@ fn mark_target_exists(
         // a collision with its own source. The folded set is built with the
         // scan, not per plan.
         let folded = dirs.folded_names(dir);
+
+        // The sources are sorted by directory too, so one cursor walks them
+        // alongside the destinations.
+        while source_start < sources.len() && sources[source_start].dir < dir {
+            source_start += 1;
+        }
+        let source_end =
+            source_start + sources[source_start..].iter().take_while(|it| it.dir == dir).count();
+        let mut folded_sources: HashMap<Vec<u8>, usize> = HashMap::new();
+        for from in &sources[source_start..source_end] {
+            folded_sources
+                .entry(osname::case_fold(from.name.as_bytes()))
+                .or_insert(from.row);
+        }
+        source_start = source_end;
 
         for target in &targets.by_name[at..end] {
             while matches!(present, Some(name) if name.as_os_str() < target.name) {
@@ -246,17 +259,20 @@ fn mark_target_exists(
                 file_name_of(&rows[target.row].src).as_bytes(),
                 target.name.as_bytes(),
             );
-            let folded_taken = !on_disk
-                && !case_only
-                && folded.is_some_and(|names| {
-                    names.contains(&osname::case_fold(target.name.as_bytes()))
-                });
-            if folded_taken {
-                status[target.row] = Status::Conflict(ConflictKind::CaseOnly);
+            if !on_disk && !case_only {
+                let folded_name = osname::case_fold(target.name.as_bytes());
+                if let Some(vacator) = folded_sources.get(&folded_name).copied()
+                    && vacator != target.row
+                {
+                    folded_blocker[target.row] = Some(vacator);
+                } else if folded.is_some_and(|names| names.contains(&folded_name)) {
+                    status[target.row] = Status::Conflict(ConflictKind::CaseOnly);
+                }
             }
         }
         at = end;
     }
+    folded_blocker
 }
 
 /// For every row, the row holding its destination: the row apply has to run
@@ -350,9 +366,18 @@ fn apply_order(rows: &mut [PlanRow], status: &[Status], blocker: &[Option<usize>
     }
 
     let mut emitted = vec![false; rows.len()];
+    let mut in_group = vec![false; rows.len()];
+    let mut queued = vec![false; rows.len()];
     let mut order: Vec<usize> = Vec::with_capacity(rows.len());
     for group in by_depth.values().rev() {
-        order.extend(order_within_depth(rows, group, blocker, &mut emitted));
+        order.extend(order_within_depth(
+            rows,
+            group,
+            blocker,
+            &mut emitted,
+            &mut in_group,
+            &mut queued,
+        ));
     }
 
     // Rows apply will not touch keep their scan order.
@@ -376,14 +401,16 @@ fn order_within_depth(
     group: &[usize],
     blocker: &[Option<usize>],
     emitted: &mut [bool],
+    in_group: &mut [bool],
+    queued: &mut [bool],
 ) -> Vec<usize> {
     // `dependency[row]` is the row that vacates `row`'s destination. It always
     // shares this row's directory, so it can never leave this group. If one
     // does, propagation missed a row; treating it as no dependency keeps the
     // permutation instead of panicking.
-    let mut in_group = vec![false; rows.len()];
     for &at in group {
         in_group[at] = true;
+        queued[at] = false;
     }
     let mut dependency: HashMap<usize, usize> = HashMap::new();
     let mut dependents: HashMap<usize, Vec<usize>> = HashMap::new();
@@ -399,7 +426,6 @@ fn order_within_depth(
 
     let mut order: Vec<usize> = Vec::with_capacity(group.len());
     let mut ready: VecDeque<usize> = VecDeque::new();
-    let mut queued = vec![false; rows.len()];
     for &at in group {
         let ready_now = match dependency.get(&at) {
             Some(blocked_by) => emitted[*blocked_by],
@@ -413,6 +439,8 @@ fn order_within_depth(
 
     let mut remaining = group.iter().filter(|at| !emitted[**at]).count();
     let mut cursor = 0usize;
+    let mut seen: HashMap<usize, usize> = HashMap::new();
+    let mut path: Vec<usize> = Vec::new();
     while remaining > 0 {
         while let Some(at) = ready.pop_front() {
             queued[at] = false;
@@ -438,8 +466,8 @@ fn order_within_depth(
         let Some(&start) = group.get(cursor) else {
             break;
         };
-        let mut seen: HashMap<usize, usize> = HashMap::new();
-        let mut path: Vec<usize> = Vec::new();
+        seen.clear();
+        path.clear();
         let mut current = start;
         loop {
             if let Some(&looped_at) = seen.get(&current) {
@@ -483,6 +511,10 @@ fn order_within_depth(
             };
             current = next;
         }
+    }
+    for &at in group {
+        in_group[at] = false;
+        queued[at] = false;
     }
     order
 }
@@ -654,15 +686,38 @@ mod tests {
     }
 
     #[test]
-    fn rows_apply_never_touches_are_kept_in_scan_order() {
+    fn rows_apply_never_touches_keep_their_relative_scan_order() {
         let temp = tempfile::tempdir().unwrap();
-        write(temp.path(), &["a", "z"]);
+        write(temp.path(), &["a", "b", "c"]);
 
-        let (entries, index) = scan_dir(temp.path()).expect("scan");
-        let rows = plan(&entries, &index, &RuleSet { rules: vec![] }).expect("plan").rows;
+        // Pinned, so the expectation does not depend on the filesystem's order.
+        let (mut entries, index) = scan_dir(temp.path()).expect("scan");
+        entries.reverse();
+        let rows = plan(
+            &entries,
+            &index,
+            &RuleSet {
+                rules: vec![Rule::Literal {
+                    find: b"a".to_vec(),
+                    replace: b"z".to_vec(),
+                    target: Target::Whole,
+                }],
+            },
+        )
+        .expect("plan")
+        .rows;
 
-        assert!(rows.iter().all(|row| row.status == Status::Unchanged));
-        assert_eq!(order_of(&rows).len(), entries.len());
+        // Only `a` is applied, so it moves first; the untouched rows keep the
+        // scan order they arrived in.
+        let mut expected = vec!["a".to_string()];
+        expected.extend(
+            entries
+                .iter()
+                .map(|entry| entry.name.to_string_lossy().into_owned())
+                .filter(|name| name.as_str() != "a"),
+        );
+        assert_eq!(order_of(&rows), expected);
+        assert_eq!(rows.iter().filter(|row| row.status == Status::Ok).count(), 1);
     }
 
     #[test]
@@ -689,7 +744,7 @@ mod tests {
     }
 
     #[test]
-    fn two_neighbouring_cycles_stay_separate_staged_runs() {
+    fn two_neighbouring_cycles_share_one_contiguous_staged_block() {
         let temp = tempfile::tempdir().unwrap();
         write(temp.path(), &["ab", "ba", "cd", "dc"]);
 
@@ -705,8 +760,9 @@ mod tests {
 
         assert_eq!(rows.len(), 4);
         assert!(rows.iter().all(|row| row.via_temp));
-        // Emitted as cycles, not as one four-name chain: each row is the other
-        // member's immediate neighbour.
+        // Both pairs are emitted as cycles, not one four-name chain, but apply
+        // sees the four `via_temp` rows as a single staged block and lands them
+        // in reverse. Each pair still stays side by side.
         let at = |name: &str| {
             rows.iter()
                 .position(|row| file_name_of(&row.src) == OsStr::new(name))
@@ -714,6 +770,9 @@ mod tests {
         };
         assert_eq!((at("ab") as i64 - at("ba") as i64).abs(), 1);
         assert_eq!((at("cd") as i64 - at("dc") as i64).abs(), 1);
+        let first = *["ab", "ba", "cd", "dc"].iter().map(|&name| at(name)).min().unwrap();
+        let last = *["ab", "ba", "cd", "dc"].iter().map(|&name| at(name)).max().unwrap();
+        assert_eq!(last - first, 3, "all four rows are one staged block");
     }
 
     #[test]
@@ -906,6 +965,94 @@ mod tests {
     }
 
     #[test]
+    fn a_name_freed_under_a_different_case_is_ordered_not_conflicted() {
+        let temp = tempfile::tempdir().unwrap();
+        write(temp.path(), &["foo", "bar"]);
+
+        // `foo` leaves as `baz`, so `bar -> FOO` has no name to collide with
+        // once apply order is respected.
+        let rows = plan_dir(
+            temp.path(),
+            vec![
+                Rule::Literal {
+                    find: b"foo".to_vec(),
+                    replace: b"baz".to_vec(),
+                    target: Target::Whole,
+                },
+                Rule::Literal {
+                    find: b"bar".to_vec(),
+                    replace: b"FOO".to_vec(),
+                    target: Target::Whole,
+                },
+            ],
+        );
+
+        let status_of = |name: &str| {
+            rows.iter().find(|row| file_name_of(&row.src) == OsStr::new(name)).unwrap().status
+        };
+        assert_eq!(status_of("foo"), Status::Ok);
+        assert_eq!(status_of("bar"), Status::Ok);
+
+        let at = |name: &str| {
+            rows.iter()
+                .position(|row| file_name_of(&row.src) == OsStr::new(name))
+                .unwrap_or_else(|| panic!("{name}"))
+        };
+        assert!(at("foo") < at("bar"), "the folded name is freed before it is taken");
+    }
+
+    #[test]
+    fn a_three_row_cycle_and_a_blocked_chain_keep_every_row_once() {
+        let mut index = DirIndex::default();
+        index.insert(
+            PathBuf::from("/r"),
+            ["abc", "bca", "cab"].into_iter().map(OsString::from).collect(),
+        );
+        index.insert(
+            PathBuf::from("/r/d"),
+            ["x", "y", "z", "w"].into_iter().map(OsString::from).collect(),
+        );
+
+        let row = |dir: &str, from: &str, to: &str| PlanRow {
+            src: PathBuf::from(dir).join(from),
+            dst: PathBuf::from(dir).join(to),
+            status: Status::Ok,
+            via_temp: false,
+        };
+        let mut rows = vec![
+            row("/r", "abc", "bca"),
+            row("/r/d", "x", "y"),
+            row("/r", "bca", "cab"),
+            row("/r/d", "y", "z"),
+            row("/r", "cab", "abc"),
+            row("/r/d", "z", "w"),
+        ];
+
+        resolve(&mut rows, &index);
+
+        let at = |name: &str| {
+            rows.iter()
+                .position(|row| file_name_of(&row.src) == OsStr::new(name))
+                .unwrap_or_else(|| panic!("{name}"))
+        };
+        for name in ["abc", "bca", "cab"] {
+            assert_eq!(rows[at(name)].status, Status::Ok);
+            assert!(rows[at(name)].via_temp);
+        }
+        // `w` stays, so the chain's last row is blocked and the rest follow.
+        for name in ["x", "y", "z"] {
+            assert_eq!(rows[at(name)].status, Status::Conflict(ConflictKind::TargetExists));
+        }
+
+        let positions: Vec<usize> =
+            ["abc", "bca", "cab"].iter().map(|&name| at(name)).collect();
+        let first = *positions.iter().min().unwrap();
+        let last = *positions.iter().max().unwrap();
+        assert_eq!(last - first, 2, "the cycle is one contiguous run");
+        assert_eq!(rows.len(), 6, "every row appears once");
+    }
+
+    #[test]
     fn a_blocker_outside_the_group_does_not_panic() {
         let row = |name: &str| PlanRow {
             src: PathBuf::from("/r").join(name),
@@ -915,10 +1062,19 @@ mod tests {
         };
         let mut rows = vec![row("a"), row("b")];
         let mut emitted = vec![false; rows.len()];
+        let mut in_group = vec![false; rows.len()];
+        let mut queued = vec![false; rows.len()];
 
         // A proof bug would leave row 0 waiting on row 1, which is not in the
         // group. The fallback must keep the permutation, not index out of bounds.
-        let order = order_within_depth(&mut rows, &[0], &[Some(1), None], &mut emitted);
+        let order = order_within_depth(
+            &mut rows,
+            &[0],
+            &[Some(1), None],
+            &mut emitted,
+            &mut in_group,
+            &mut queued,
+        );
 
         assert_eq!(order, vec![0]);
         assert!(emitted[0]);
