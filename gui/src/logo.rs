@@ -3,7 +3,7 @@
 //! egui cannot decode SVG and this build has no image loader (`egui_extras` is
 //! `default-features = false`), so `logo.svg` is rasterised to raw RGBA once and
 //! committed beside this file: building needs no SVG tool. Regenerate it with
-//! `magick -background none logo.svg -resize 256x256 -depth 8 rgba:gui/assets/logo.rgba`.
+//! `magick -background none assets/logo.svg -resize 256x256 -depth 8 rgba:gui/assets/logo.rgba`.
 
 use egui::{Color32, ColorImage, Rect, TextureHandle, TextureOptions};
 
