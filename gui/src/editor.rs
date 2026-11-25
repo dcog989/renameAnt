@@ -118,11 +118,22 @@ fn card(
                     .sense(egui::Sense::click()),
             )
             .on_hover_text("turn this rule on or off");
+        let name_hovered = title.hovered();
         if crate::style::pointer(title).clicked() {
             edit.enabled = !edit.enabled;
         }
+        // The name is a hit target for the same toggle, so hovering it lights the
+        // checkbox the way hovering the checkbox itself does.
+        let idle = ui.style().visuals.widgets.inactive;
+        if name_hovered {
+            let hovered = ui.style().visuals.widgets.hovered;
+            ui.style_mut().visuals.widgets.inactive = hovered;
+        }
         crate::style::pointer(ui.add(egui::Checkbox::without_text(&mut edit.enabled)))
             .accessible_name(name(index, "enabled"));
+        if name_hovered {
+            ui.style_mut().visuals.widgets.inactive = idle;
+        }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if !edit.builtin
