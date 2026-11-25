@@ -118,11 +118,13 @@ fn card(
         if toggle.clicked() {
             edit.enabled = !edit.enabled;
         }
-        let title = crate::style::pointer(ui.add(
-            egui::Label::new(RichText::new(edit.kind.label()).color(hot_color).size(16.0))
-                .wrap_mode(egui::TextWrapMode::Extend)
-                .sense(egui::Sense::click()),
-        ));
+        let title = crate::style::pointer(
+            ui.add(
+                egui::Label::new(RichText::new(edit.kind.label()).color(hot_color).size(16.0))
+                    .wrap_mode(egui::TextWrapMode::Extend)
+                    .sense(egui::Sense::click()),
+            ),
+        );
         if title.clicked() {
             edit.enabled = !edit.enabled;
         }
@@ -131,10 +133,9 @@ fn card(
             let hovered = ui.style().visuals.widgets.hovered;
             ui.style_mut().visuals.widgets.inactive = hovered;
         }
-        let checkbox = crate::style::pointer(ui.add(egui::Checkbox::without_text(
-            &mut edit.enabled,
-        )))
-        .accessible_name(name(index, "enabled"));
+        let checkbox =
+            crate::style::pointer(ui.add(egui::Checkbox::without_text(&mut edit.enabled)))
+                .accessible_name(name(index, "enabled"));
         if hot {
             ui.style_mut().visuals.widgets.inactive = idle;
         }
@@ -265,8 +266,7 @@ fn fields(ui: &mut Ui, index: usize, edit: &mut RuleEdit) {
                 RuleKind::Number => {
                     place_combo(ui, index, edit);
                     label(ui, "start");
-                    ui.add(DragValue::new(&mut edit.start))
-                        .accessible_name(name(index, "start"));
+                    ui.add(DragValue::new(&mut edit.start)).accessible_name(name(index, "start"));
                     label(ui, "step");
                     ui.add(DragValue::new(&mut edit.step).range(1..=MAX_STEP))
                         .accessible_name(name(index, "step"));

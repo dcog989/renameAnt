@@ -9,12 +9,8 @@ use renameant_core::rule::{
 };
 
 /// The date formats the editor offers.
-pub const DATE_FORMATS: [DateFormat; 4] = [
-    DateFormat::Yyyymmdd,
-    DateFormat::Ddmmyyyy,
-    DateFormat::MmDdYyyy,
-    DateFormat::YyyymmddHhmmss,
-];
+pub const DATE_FORMATS: [DateFormat; 4] =
+    [DateFormat::Yyyymmdd, DateFormat::Ddmmyyyy, DateFormat::MmDdYyyy, DateFormat::YyyymmddHhmmss];
 
 /// The normalisations the editor offers, in the order `Normalize` applies them.
 pub const NORMALIZE_OPS: [(NormalizeOp, &str); 5] = [
@@ -490,11 +486,7 @@ mod tests {
             date_format: DateFormat::YyyymmddHhmmss,
             ..RuleEdit::default()
         });
-        round_trips(RuleEdit {
-            kind: RuleKind::Date,
-            place: Place::Suffix,
-            ..RuleEdit::default()
-        });
+        round_trips(RuleEdit { kind: RuleKind::Date, place: Place::Suffix, ..RuleEdit::default() });
         round_trips(RuleEdit {
             kind: RuleKind::Case,
             case: CaseStyle::Pascal,

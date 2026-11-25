@@ -71,10 +71,7 @@ fn data_home() -> std::io::Result<PathBuf> {
         return Ok(PathBuf::from(dir));
     }
     let home = std::env::var_os("HOME").ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "neither XDG_DATA_HOME nor HOME is set",
-        )
+        std::io::Error::new(std::io::ErrorKind::NotFound, "neither XDG_DATA_HOME nor HOME is set")
     })?;
     Ok(PathBuf::from(home).join(".local/share"))
 }
@@ -82,9 +79,8 @@ fn data_home() -> std::io::Result<PathBuf> {
 /// The AppImage launcher sets `APPIMAGE` to the file the user runs. Inside the
 /// mount `current_exe()` points at a path that disappears on exit.
 fn running_target() -> Option<Target> {
-    if let Some(path) = std::env::var_os("APPIMAGE")
-        .map(PathBuf::from)
-        .filter(|path| path.is_file())
+    if let Some(path) =
+        std::env::var_os("APPIMAGE").map(PathBuf::from).filter(|path| path.is_file())
     {
         return Some(Target { path, appimage: true });
     }
@@ -102,8 +98,8 @@ fn entry(target: &Target) -> String {
     let exec = exec_quote(&target.path.to_string_lossy());
     let mut entry = String::new();
     for line in DESKTOP_TEMPLATE.lines() {
-        if let Some(rest) = line.strip_prefix("Exec=") {
-            entry.push_str(&format!("Exec={exec}{rest}\n"));
+        if line.starts_with("Exec=") {
+            entry.push_str(&format!("Exec={exec}\n"));
         } else {
             entry.push_str(line);
             entry.push('\n');
@@ -155,9 +151,7 @@ fn write_if_changed(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// Rebuilds the desktop-file cache. Absent on minimal systems; KDE also
 /// refreshes through KSycoca, so a failure is not fatal.
 fn refresh_menu(applications: &Path) {
-    let _ = std::process::Command::new("update-desktop-database")
-        .arg(applications)
-        .status();
+    let _ = std::process::Command::new("update-desktop-database").arg(applications).status();
 }
 
 #[cfg(test)]
@@ -171,10 +165,7 @@ mod tests {
     #[test]
     fn appimage_entry_registers_the_running_file() {
         let entry = entry_for("/home/user/Apps/renameAnt 2.AppImage");
-        assert!(
-            entry.contains("Exec=\"/home/user/Apps/renameAnt 2.AppImage\"\n"),
-            "{entry}"
-        );
+        assert!(entry.contains("Exec=\"/home/user/Apps/renameAnt 2.AppImage\"\n"), "{entry}");
         assert!(
             entry.contains(&format!("{MARKER}/home/user/Apps/renameAnt 2.AppImage\n")),
             "{entry}"
@@ -191,28 +182,25 @@ mod tests {
             path: PathBuf::from("/repo/target/debug/renameant-gui"),
             appimage: false,
         });
-        assert!(
-            entry.contains("Exec=\"/repo/target/debug/renameant-gui\"\n"),
-            "{entry}"
-        );
+        assert!(entry.contains("Exec=\"/repo/target/debug/renameant-gui\"\n"), "{entry}");
         assert!(entry.contains("NoDisplay=true\n"), "{entry}");
     }
 
     #[test]
     fn marker_is_read_back_verbatim() {
         let entry = entry_for("/opt/renameAnt-0.1.0-x86_64.AppImage");
-        assert_eq!(
-            marker_value(&entry),
-            Some("/opt/renameAnt-0.1.0-x86_64.AppImage")
-        );
+        assert_eq!(marker_value(&entry), Some("/opt/renameAnt-0.1.0-x86_64.AppImage"));
         assert_eq!(marker_value("[Desktop Entry]\n"), None);
     }
 
     #[test]
     fn only_an_entry_whose_executable_survives_is_current() {
         assert!(is_current("[Desktop Entry]\nIcon=renameant\n"));
-        assert!(is_current(&entry_for("/opt/renameAnt-0.1.0-x86_64.AppImage")));
-        assert!(!is_current(&entry_for("/opt/moved-away.AppImage")));
+        let dir = tempfile::tempdir().expect("a home for the appimage");
+        let live = dir.path().join("renameAnt-0.1.0-x86_64.AppImage");
+        std::fs::write(&live, b"x").expect("the appimage");
+        assert!(is_current(&entry_for(&live.to_string_lossy())));
+        assert!(!is_current(&entry_for(&dir.path().join("moved-away.AppImage").to_string_lossy())));
     }
 
     #[test]
