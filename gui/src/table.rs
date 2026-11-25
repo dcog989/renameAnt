@@ -18,7 +18,7 @@ const HEADER_HEIGHT: f32 = 24.0;
 const ROW_HEIGHT: f32 = 20.0;
 /// Left and right padding inside a cell, so every column's content is inset the
 /// same amount.
-const CELL_PADDING: i8 = 6;
+const CELL_PADDING: f32 = 6.0;
 const STATUS_WIDTH: f32 = 110.0;
 /// The merged path column: room for a full path, with the name's tail last.
 const PATH_WIDTH: f32 = 300.0;
@@ -99,7 +99,8 @@ pub fn show(ui: &mut egui::Ui, model: &mut PlanModel) -> Change {
                 header.col(|ui| {
                     fixed_edges.push(fixed_column_edge(ui));
                     cell(ui, |ui| {
-                        center(ui, |ui| {
+                        let width = text_width(ui, "Remove");
+                        center(ui, width, |ui| {
                             ui.strong("Remove");
                         });
                     });
@@ -144,13 +145,11 @@ pub fn show(ui: &mut egui::Ui, model: &mut PlanModel) -> Change {
                 });
                 row.col(|ui| {
                     cell(ui, |ui| {
-                        center(ui, |ui| {
+                        let width = text_width(ui, &modified);
+                        center(ui, width, |ui| {
                             // Extend, not wrap: wrapping inside the auto-sized
                             // column would measure it by the wrapped width.
-                            ui.add(
-                                egui::Label::new(egui::RichText::new(modified).monospace())
-                                    .extend(),
-                            );
+                            ui.add(egui::Label::new(egui::RichText::new(modified)).extend());
                         });
                     });
                 });
@@ -158,7 +157,7 @@ pub fn show(ui: &mut egui::Ui, model: &mut PlanModel) -> Change {
                 let mut remove_rect: Option<egui::Rect> = None;
                 row.col(|ui| {
                     cell(ui, |ui| {
-                        center(ui, |ui| {
+                        center(ui, REMOVE_CHIP, |ui| {
                             // A painted chip, not an interactive widget: a
                             // widget here would take the hover from the row and
                             // drop its highlight. The row's click is hit-tested
@@ -229,12 +228,16 @@ fn path_text(ui: &egui::Ui, path: &Path) -> egui::text::LayoutJob {
 }
 
 /// One table cell's content, inset by [`CELL_PADDING`] on both sides so every
-/// column's content lines up.
+/// column's content lines up. A horizontal scope fills the row height, which is
+/// what centres the content vertically; a frame would size to its content and
+/// sit at the top instead.
 fn cell<R>(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui) -> R) -> R {
-    egui::Frame::new()
-        .inner_margin(egui::Margin::symmetric(CELL_PADDING, 0))
-        .show(ui, content)
-        .inner
+    ui.horizontal_centered(|ui| {
+        ui.add_space(CELL_PADDING);
+        ui.set_max_width((ui.available_width() - CELL_PADDING).max(0.0));
+        content(ui)
+    })
+    .inner
 }
 
 /// A cell whose content packs against the column's right edge.
@@ -242,10 +245,22 @@ fn right<R>(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui) -> R) -> R {
     ui.with_layout(Layout::right_to_left(Align::Center), content).inner
 }
 
-/// A cell whose content is centred in the column. Vertical rather than
-/// justified: justification would stretch the `X`'s click target to the cell.
-fn center<R>(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui) -> R) -> R {
-    ui.with_layout(Layout::top_down(Align::Center), content).inner
+/// The width `text` has at the table's body style.
+fn text_width(ui: &egui::Ui, text: &str) -> f32 {
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    ui.painter().layout_no_wrap(text.to_owned(), font, ui.visuals().text_color()).size().x
+}
+
+/// A cell whose content is centred in the column, given its width. The leading
+/// space keeps the content's own size, which justification would not: it would
+/// stretch the `X`'s click target to the cell.
+fn center<R>(ui: &mut egui::Ui, width: f32, content: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let lead = ((ui.available_width() - width) / 2.0).max(0.0);
+    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+        ui.add_space(lead);
+        content(ui)
+    })
+    .inner
 }
 
 /// The x of the divider after a fixed column. `ui` is that column's header cell;
@@ -286,8 +301,11 @@ fn sort_cell(
     ));
     cell(ui, |ui| match align {
         HeaderAlign::Left => sort_header(ui, model, key, title, align, clicked.clicked()),
+        // The title itself is centred, so the direction marker can hang beside
+        // it without pushing it off centre.
         HeaderAlign::Center => {
-            center(ui, |ui| sort_header(ui, model, key, title, align, clicked.clicked()))
+            let width = text_width(ui, title);
+            center(ui, width, |ui| sort_header(ui, model, key, title, align, clicked.clicked()));
         }
         HeaderAlign::Right => {
             right(ui, |ui| sort_header(ui, model, key, title, align, clicked.clicked()))
@@ -306,8 +324,11 @@ fn sort_header(
     cell_clicked: bool,
 ) {
     // No button padding: the header text lines up with the cell content, which
-    // the cell's own padding already insets.
+    // the cell's own padding already insets. No minimum height either: the whole
+    // header cell is clickable, and a taller button would hang past the header
+    // row and centre its text a pixel low.
     ui.style_mut().spacing.button_padding = egui::Vec2::ZERO;
+    ui.style_mut().spacing.interact_size.y = 0.0;
     let active = model.sort.key == key;
     let button = egui::Button::new(egui::RichText::new(title).strong()).frame(false);
     let response = ui.add(button).on_hover_text("sort by this column");
