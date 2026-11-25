@@ -12,7 +12,7 @@ use std::thread;
 use renameant_core::apply::{self, ApplyOptions, ApplyReport};
 use renameant_core::journal::{Journal, RunId, Session};
 use renameant_core::plan::Plan;
-use renameant_core::scan::{self, DirIndex, Entry};
+use renameant_core::scan::{self, Scan};
 
 use crate::model::FileMeta;
 
@@ -58,7 +58,7 @@ pub enum Done {
         sessions: Vec<Session>,
         prune_error: Option<String>,
     },
-    Scanned(io::Result<(Vec<Entry>, DirIndex)>),
+    Scanned(io::Result<Scan>),
     /// A stat pass. Paths it could not read are left out.
     Statted(Vec<(PathBuf, FileMeta)>),
     /// A file browser that closed.

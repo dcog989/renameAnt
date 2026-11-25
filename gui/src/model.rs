@@ -117,7 +117,9 @@ impl PlanModel {
         self.meta_loaded = false;
         // A removal is for a path, not for one scan: it survives a rescan of
         // the same tree and is dropped once the path is gone.
-        self.removed.retain(|path| entries.iter().any(|entry| &entry.path == path));
+        let present: HashSet<&Path> =
+            entries.iter().map(|entry| entry.path.as_path()).collect();
+        self.removed.retain(|path| present.contains(path.as_path()));
         self.not_utf8 =
             entries.iter().filter(|entry| !is_utf8(entry.name.as_os_str().as_bytes())).count();
         self.not_nfc = entries
@@ -144,11 +146,11 @@ impl PlanModel {
                 self.plan = plan;
             }
             Err(error) => {
+                // Keep the last good plan and its totals: `error` disables
+                // Apply, so a typo mid-edit does not blank the preview the
+                // user was reading.
                 self.error = Some(error);
-                // A pipeline that will not compile renames nothing, but the list
-                // still shows every row: the error belongs in the status, not in
-                // place of the table.
-                self.plan = self.build_plan(&RuleSet::default()).unwrap_or_default();
+                return;
             }
         }
         // The footer splits the rows that will be renamed by what they are. The
@@ -239,11 +241,10 @@ impl PlanModel {
         self.view = view;
     }
 
-    /// The paths to stat: every entry the scan found, not just the rows the
-    /// filter leaves in the plan, so loosening a filter never exposes a row
-    /// without a size or a mtime.
+    /// The paths to stat: the rows the plan shows. A filtered-out entry is not
+    /// shown, so it is read only when a filter change puts it back in the plan.
     pub fn meta_paths(&self) -> Vec<PathBuf> {
-        self.entries.iter().map(|entry| entry.path.clone()).collect()
+        self.plan.rows.iter().map(|row| row.src.clone()).collect()
     }
 
     /// Records a stat pass. A row it could not read is simply absent, so it
@@ -423,5 +424,41 @@ mod tests {
         // `a` cannot take its name.
         assert_eq!(status_of(&model, "/d/a"), Status::Conflict(ConflictKind::TargetExists));
         assert!(model.plan.rows.iter().all(|row| row.src.as_path() != Path::new("/d/ab")));
+        // Only rows the plan shows are statted.
+        assert_eq!(model.meta_paths(), vec![PathBuf::from("/d/a")]);
+    }
+
+    #[test]
+    fn a_broken_plan_keeps_the_last_preview() {
+        let entry = |name: &str| Entry {
+            path: PathBuf::from("/d").join(name),
+            name: std::ffi::OsString::from(name),
+            kind: renameant_core::scan::Kind::File,
+        };
+        let mut index = DirIndex::default();
+        index.existing.insert(
+            PathBuf::from("/d"),
+            std::iter::once(std::ffi::OsString::from("a")).collect(),
+        );
+        let mut model = PlanModel {
+            entries: vec![entry("a")],
+            index: Some(index),
+            ..PlanModel::default()
+        };
+        let rules = RuleSet {
+            rules: vec![Rule::InsertRemove {
+                op: InsertRemoveOp::AddSuffix(b"b".to_vec()),
+                target: Target::Whole,
+            }],
+        };
+        model.replan(&rules);
+        let before = model.plan.clone();
+        assert_eq!(before.rows.len(), 1);
+
+        model.filter = Filter { pattern: "(".into(), regex: true, ..Filter::default() };
+        model.replan(&rules);
+
+        assert!(model.error.is_some());
+        assert_eq!(model.plan, before, "the last good preview stays");
     }
 }

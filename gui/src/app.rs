@@ -13,6 +13,7 @@ use renameant_core::filter::Filter;
 use renameant_core::journal::{self, RunId, Session};
 use renameant_core::plan::PlanRow;
 use renameant_core::rule::RuleSet;
+use renameant_core::scan::Scan;
 
 use crate::config;
 use crate::dialogs::{self, Choice};
@@ -98,6 +99,11 @@ enum Overlay {
 
 pub struct App {
     model: PlanModel,
+    /// The last scan stopped at the core's entry cap, so its rows are only part
+    /// of the picked tree.
+    scan_truncated: bool,
+    /// Directories the last scan could not read.
+    scan_unreadable: Vec<PathBuf>,
     /// The folders and files to rename, in the order they were picked. Every
     /// scan is over this list, so one folder is just the one-pick case.
     added: Vec<PathBuf>,
@@ -168,6 +174,8 @@ impl App {
         });
         let mut app = App {
             model: PlanModel::default(),
+            scan_truncated: false,
+            scan_unreadable: Vec::new(),
             added: Vec::new(),
             dir_field: String::new(),
             recursive: false,
@@ -212,7 +220,15 @@ impl App {
 
     fn replan(&mut self) {
         let (rules, filter) = self.job();
+        let filter_changed = self.planned.1 != filter;
         self.model.replan(&rules);
+        // The stat pass follows the plan. A filter change can expose rows that
+        // were never read, so they get one more pass; a pass already in flight
+        // covered the old rows only.
+        if filter_changed {
+            self.model.meta_loaded = false;
+            self.stat_pending = false;
+        }
         self.planned = (rules, filter);
         self.dirty_since = None;
     }
@@ -278,6 +294,8 @@ impl App {
     fn scan(&mut self) {
         if self.added.is_empty() {
             self.model = PlanModel::default();
+            self.scan_truncated = false;
+            self.scan_unreadable.clear();
             self.replan();
             self.status.clear();
             return;
@@ -299,6 +317,12 @@ impl App {
                     continue;
                 }
             };
+            // A typed path that does not exist would otherwise scan as an empty
+            // selection with no explanation.
+            if let Err(error) = std::fs::symlink_metadata(&path) {
+                self.status = format!("cannot use {}: {error}", path.display());
+                continue;
+            }
             if !self.added.contains(&path) {
                 self.added.push(path);
             }
@@ -393,9 +417,26 @@ impl App {
             self.outstanding = self.outstanding.saturating_sub(1);
             self.busy = self.outstanding > 0;
             match done {
+                // The selection was cleared while this scan ran; its rows belong
+                // to a pick the user has already dropped.
+                Done::Scanned(_) if self.added.is_empty() => {
+                    self.status = "nothing picked".to_owned();
+                }
                 Done::Scanned(result) => match result {
-                    Ok((entries, index)) => {
-                        self.status = format!("{} entries", entries.len());
+                    Ok(Scan { entries, index, unreadable, truncated }) => {
+                        let count = entries.len();
+                        self.scan_truncated = truncated;
+                        self.scan_unreadable = unreadable;
+                        self.status = if truncated {
+                            format!("stopped at {count} entries")
+                        } else if !self.scan_unreadable.is_empty() {
+                            format!(
+                                "{count} entries; {} folders could not be read",
+                                self.scan_unreadable.len()
+                            )
+                        } else {
+                            format!("{count} entries")
+                        };
                         self.model.set_scan(entries, index);
                         self.replan();
                     }
@@ -403,6 +444,8 @@ impl App {
                         // The old rows belong to a selection that just failed
                         // to scan; applying them would rename the wrong files.
                         self.model.clear();
+                        self.scan_truncated = false;
+                        self.scan_unreadable.clear();
                         self.status = format!("cannot read the picked paths: {error}");
                     }
                 },
@@ -547,6 +590,26 @@ impl App {
     /// whole truth when it is not.
     fn notices(&self, ui: &mut egui::Ui) {
         let (not_utf8, not_nfc) = (self.model.not_utf8, self.model.not_nfc);
+        if !self.scan_unreadable.is_empty() {
+            let first = self.scan_unreadable[0].display();
+            let text = match self.scan_unreadable.len() {
+                1 => format!("a folder could not be read: {first}"),
+                count => format!("{count} folders could not be read; first: {first}"),
+            };
+            ui.colored_label(warning(ui), text);
+        }
+        if self.scan_truncated {
+            ui.colored_label(
+                warning(ui),
+                format!(
+                    "the scan stopped at {} entries: narrow the pick or turn off Subdirectories",
+                    self.model.entries.len()
+                ),
+            );
+        }
+        if !self.model.filter.kinds.dirs && !self.model.filter.kinds.files {
+            ui.colored_label(warning(ui), "the filter keeps nothing: tick Directories or Files");
+        }
         if not_utf8 > 0 {
             ui.colored_label(
                 warning(ui),
@@ -616,7 +679,10 @@ impl App {
         let (files, folders, actionable) = (totals.files, totals.folders, totals.actionable);
         ui.horizontal(|ui| {
             ui.label(format!("{files} files / {folders} folders to rename"));
-            let ready = actionable > 0 && !self.busy && self.model.error.is_none();
+            let ready = actionable > 0
+                && !self.busy
+                && self.model.error.is_none()
+                && !self.scan_truncated;
             if ui
                 .add_enabled(
                     ready,

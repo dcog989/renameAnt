@@ -254,3 +254,37 @@ fn a_picked_path_follows_only_a_rename_that_happened() {
 
     assert_eq!(app.added, vec![PathBuf::from("/d/new-name"), PathBuf::from("/d/failed")]);
 }
+
+/// A scan answers for the picks it was given. Once the user clears them, that
+/// answer must not put the rows back.
+#[test]
+fn a_scan_that_lands_after_clear_content_is_dropped() {
+    let _guard = ENV.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    let home = tempfile::tempdir().expect("a home for the run");
+    let state = tempfile::tempdir().expect("somewhere for the journal");
+    let target = home.path().join("files");
+    fs::create_dir(&target).expect("the scanned directory");
+    fs::write(target.join("a.txt"), b"x").expect("a file");
+    unsafe {
+        env::set_var("HOME", home.path());
+        env::set_var("XDG_STATE_HOME", state.path());
+        env::set_var("XDG_CONFIG_HOME", state.path());
+    }
+
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT))
+        .allow_missing_glyphs()
+        .build_eframe(|cc| App::new(cc));
+    pump_until(&mut harness, "the first frame", |app| !app.busy);
+
+    harness.state_mut().added = vec![target];
+    harness.state_mut().scan();
+    // Clear before the frame that would apply the answer.
+    harness.state_mut().added.clear();
+    harness.state_mut().scan();
+    pump_until(&mut harness, "the stale scan", |app| !app.busy);
+
+    assert!(harness.state().model.entries.is_empty());
+    assert_eq!(harness.state().status, "nothing picked");
+}
