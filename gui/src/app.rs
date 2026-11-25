@@ -4,6 +4,7 @@
 //! plan shown in the table is the plan that Apply runs — never a fresh one — and
 //! the initial state writes nothing.
 
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -144,6 +145,12 @@ pub struct App {
     /// The journal panel is shown unless the user collapses it.
     journal_open: bool,
     status: String,
+    /// A failed run's message. A rescan replaces `status`, so this stays until
+    /// the next run.
+    run_error: Option<String>,
+    /// A journal read failure. It hides undo history, so it stays until a read
+    /// succeeds.
+    journal_error: Option<String>,
     overlay: Option<Overlay>,
 }
 
@@ -193,6 +200,8 @@ impl App {
             logo: logo::texture(&cc.egui_ctx),
             journal_open: true,
             status,
+            run_error: None,
+            journal_error: None,
             overlay: None,
         };
         // Pruning and listing the journal read the whole file; keep them off
@@ -215,6 +224,12 @@ impl App {
 
     fn replan(&mut self) {
         let (rules, filter) = self.job();
+        self.replan_with(rules, filter);
+    }
+
+    /// Replan from a rule set and filter the caller already built, so one frame
+    /// does not build the pipeline twice.
+    fn replan_with(&mut self, rules: RuleSet, filter: Filter) {
         let filter_changed = self.planned.1 != filter;
         self.model.replan(&rules);
         // The stat pass follows the plan. A filter change can expose rows that
@@ -230,14 +245,16 @@ impl App {
 
     /// Recompute once the editing has stopped for [`DEBOUNCE`].
     fn replan_if_due(&mut self, ctx: &egui::Context) {
-        if self.job() == self.planned {
+        let job = self.job();
+        if job == self.planned {
             self.dirty_since = None;
             return;
         }
         let since = *self.dirty_since.get_or_insert_with(Instant::now);
         let waited = since.elapsed();
         if waited >= DEBOUNCE {
-            self.replan();
+            let (rules, filter) = job;
+            self.replan_with(rules, filter);
         } else {
             ctx.request_repaint_after(DEBOUNCE - waited);
         }
@@ -302,6 +319,9 @@ impl App {
     /// Takes what the file browser returned, skipping anything already listed.
     fn add(&mut self, picked: Vec<PathBuf>) {
         let before = self.added.len();
+        // A file dialog can hand over thousands of paths; a linear scan of
+        // `added` per pick is quadratic.
+        let mut known: HashSet<PathBuf> = self.added.iter().cloned().collect();
         for path in picked {
             // The journal replays names from another working directory, so a
             // relative pick would make undo depend on where the app was started.
@@ -318,7 +338,7 @@ impl App {
                 self.status = format!("cannot use {}: {error}", path.display());
                 continue;
             }
-            if !self.added.contains(&path) {
+            if known.insert(path.clone()) {
                 self.added.push(path);
             }
         }
@@ -343,17 +363,22 @@ impl App {
     /// skipped stays where it is: its destination was never created, and
     /// pointing the list at it would drop the file from the window.
     fn follow_renames(&mut self, report: &ApplyReport) {
+        // Built from the picks as they were before the run, so a chain or a
+        // cycle maps every row at once instead of chasing its own edits.
+        let index: HashMap<PathBuf, usize> =
+            self.added.iter().cloned().enumerate().map(|(at, path)| (path, at)).collect();
         for row in &report.rows {
             if !matches!(row.outcome, Outcome::Renamed) {
                 continue;
             }
-            if let Some(added) = self.added.iter_mut().find(|added| **added == row.src) {
-                *added = row.dst.clone();
+            if let Some(&at) = index.get(&row.src) {
+                self.added[at] = row.dst.clone();
             }
         }
     }
 
     fn start_apply(&mut self) {
+        self.run_error = None;
         let options = ApplyOptions {
             journal: self.journal.clone(),
             batched_sync: self.fast,
@@ -383,6 +408,7 @@ impl App {
     }
 
     fn start_undo(&mut self, run: RunId) {
+        self.run_error = None;
         self.status = format!("undoing run {run}…");
         let options =
             ApplyOptions { batched_sync: self.fast, ..ApplyOptions::new(self.journal.clone()) };
@@ -390,6 +416,7 @@ impl App {
     }
 
     fn start_undo_row(&mut self, run: RunId, from: PathBuf, to: PathBuf) {
+        self.run_error = None;
         self.status = format!("undoing one rename in run {run}…");
         let options =
             ApplyOptions { batched_sync: self.fast, ..ApplyOptions::new(self.journal.clone()) };
@@ -398,7 +425,7 @@ impl App {
 
     fn start_remove(&mut self, run: RunId) {
         self.status = format!("removing run {run} from the journal…");
-        self.dispatch(Job::Forget(self.journal.clone(), vec![run]));
+        self.dispatch(Job::Forget(self.journal.clone(), run));
     }
 
     fn start_clear(&mut self) {
@@ -410,116 +437,167 @@ impl App {
         while let Some(done) = self.worker.try_recv() {
             self.outstanding = self.outstanding.saturating_sub(1);
             self.busy = self.outstanding > 0;
-            match done {
-                // The selection was cleared while this scan ran; its rows belong
-                // to a pick the user has already dropped.
-                Done::Scanned(_) if self.added.is_empty() => {
-                    self.status = "nothing picked".to_owned();
-                }
-                Done::Scanned(result) => match result {
-                    Ok(Scan { entries, index, unreadable, truncated }) => {
-                        let count = entries.len();
-                        self.scan_truncated = truncated;
-                        self.scan_unreadable = unreadable;
-                        self.status = if truncated {
-                            format!("stopped at {count} entries")
-                        } else if !self.scan_unreadable.is_empty() {
-                            format!(
-                                "{count} entries; {} folders could not be read",
-                                self.scan_unreadable.len()
-                            )
-                        } else {
-                            format!("{count} entries")
-                        };
-                        self.model.set_scan(entries, index);
-                        self.replan();
-                    }
-                    Err(error) => {
-                        // The old rows belong to a selection that just failed
-                        // to scan; applying them would rename the wrong files.
-                        self.model.clear();
-                        self.scan_truncated = false;
-                        self.scan_unreadable.clear();
-                        self.status = format!("cannot read the picked paths: {error}");
-                    }
-                },
-                Done::JournalLoaded { sessions, prune_error } => {
-                    self.sessions = sessions;
-                    if let Some(error) = prune_error {
-                        self.append_status(&format!("the journal could not be pruned: {error}"));
-                    }
-                    let interrupted =
-                        self.sessions.iter().filter(|session| session.interrupted).count();
-                    if interrupted > 0 {
-                        self.append_status(&format!(
-                            "{interrupted} interrupted {} in the journal: reverse {} from the journal",
-                            if interrupted == 1 { "run" } else { "runs" },
-                            if interrupted == 1 { "it" } else { "them" },
-                        ));
-                    }
-                }
-                Done::Statted(meta) => {
-                    self.stat_pending = false;
-                    self.model.set_meta(meta);
-                }
-                Done::Picked(picked) => {
-                    self.browsing = false;
-                    match picked {
-                        Picked::Folder(Some(folder)) => {
-                            self.dir_field = folder.display().to_string();
-                            self.add(vec![folder]);
-                        }
-                        Picked::Folder(None) => {}
-                        Picked::Files(paths) => self.add(paths),
-                    }
-                }
-                Done::Ran { undo_of, result, session, sessions } => {
-                    if let Some(session) = session {
-                        self.sessions.push(session);
-                    } else {
-                        self.sessions = sessions;
-                    }
-                    match result {
-                        Ok(report) => {
-                            let run = report.run;
-                            let title = match undo_of {
-                                Some(undone) => format!("Undo of run {undone}"),
-                                None => format!("Applied run {run}"),
-                            };
-                            let (renamed, failed) = (report.renamed(), report.failed());
-                            let counts = (renamed, failed, report.skipped());
-                            self.status = format!("run {run}: {renamed} renamed, {failed} failed");
-                            self.follow_renames(&report);
-                            let listed = dialogs::listed_indices(&report);
-                            let rest = dialogs::unlisted_rows(&report);
-                            self.overlay =
-                                Some(Overlay::Report { title, report, listed, rest, counts });
-                        }
-                        Err(error) => {
-                            self.status = format!("the run stopped: {error}");
-                        }
-                    }
-                    // The names on disk have changed, so the preview is stale.
-                    self.scan();
-                }
-                Done::Forgotten { result, sessions } => match result {
-                    Ok(()) => {
-                        self.sessions = sessions;
-                        self.history.forget_all();
-                        self.status = if self.sessions.is_empty() {
-                            "journal cleared".to_owned()
-                        } else {
-                            "journal updated".to_owned()
-                        };
-                    }
-                    Err(error) => {
-                        self.status = format!("the journal could not be changed: {error}");
-                    }
-                },
-            }
+            self.handle(done);
         }
         if self.busy {
             ctx.request_repaint_after(POLL);
+        }
+    }
+
+    /// One result from the worker. Separate from `poll` so the failure paths can
+    /// be driven from a test without a broken filesystem.
+    fn handle(&mut self, done: Done) {
+        match done {
+            // The selection was cleared while this scan ran; its rows belong
+            // to a pick the user has already dropped.
+            Done::Scanned(_) if self.added.is_empty() => {
+                self.status = "nothing picked".to_owned();
+            }
+            Done::Scanned(result) => match result {
+                Ok(Scan { entries, index, unreadable, truncated }) => {
+                    let count = entries.len();
+                    self.scan_truncated = truncated;
+                    self.scan_unreadable = unreadable;
+                    self.status = if truncated {
+                        format!("stopped at {count} entries")
+                    } else if !self.scan_unreadable.is_empty() {
+                        format!(
+                            "{count} entries; {} folders could not be read",
+                            self.scan_unreadable.len()
+                        )
+                    } else {
+                        format!("{count} entries")
+                    };
+                    self.model.set_scan(entries, index);
+                    self.replan();
+                }
+                Err(error) => {
+                    // The old rows belong to a selection that just failed
+                    // to scan; applying them would rename the wrong files.
+                    self.model.clear();
+                    self.scan_truncated = false;
+                    self.scan_unreadable.clear();
+                    self.status = format!("cannot read the picked paths: {error}");
+                }
+            },
+            Done::JournalLoaded { sessions, prune_error } => {
+                match sessions {
+                    Ok(sessions) => {
+                        self.sessions = sessions;
+                        self.journal_error = None;
+                    }
+                    Err(error) => {
+                        self.journal_error = Some(format!(
+                            "the journal could not be read: {error}; its runs cannot be \
+                             shown or undone from here"
+                        ));
+                    }
+                }
+                if let Some(error) = prune_error {
+                    self.append_status(&format!("the journal could not be pruned: {error}"));
+                }
+                let interrupted =
+                    self.sessions.iter().filter(|session| session.interrupted).count();
+                if interrupted > 0 {
+                    self.append_status(&format!(
+                        "{interrupted} interrupted {} in the journal: reverse {} from the journal",
+                        if interrupted == 1 { "run" } else { "runs" },
+                        if interrupted == 1 { "it" } else { "them" },
+                    ));
+                }
+            }
+            Done::Statted(meta, requested) => {
+                self.stat_pending = false;
+                self.model.set_meta(meta);
+                // The pass may have been built for the plan before a filter
+                // change; ask for another one instead of marking the new rows
+                // as read.
+                if requested != self.model.plan.rows.len() {
+                    self.model.meta_loaded = false;
+                }
+            }
+            Done::Picked(picked) => {
+                self.browsing = false;
+                match picked {
+                    Picked::Folder(Some(folder)) => {
+                        self.dir_field = folder.display().to_string();
+                        self.add(vec![folder]);
+                    }
+                    Picked::Folder(None) => {}
+                    Picked::Files(paths) => self.add(paths),
+                }
+            }
+            Done::Ran { undo_of, result, session, sessions } => {
+                if let Some(session) = session {
+                    self.sessions.push(session);
+                } else {
+                    match sessions {
+                        Ok(sessions) => {
+                            self.sessions = sessions;
+                            self.journal_error = None;
+                        }
+                        Err(error) => {
+                            self.journal_error = Some(format!(
+                                "the journal could not be read after the run: {error}; its \
+                                 undo records may not be shown"
+                            ));
+                        }
+                    }
+                }
+                match result {
+                    Ok(report) => {
+                        self.run_error = None;
+                        let run = report.run;
+                        let title = match undo_of {
+                            Some(undone) => format!("Undo of run {undone}"),
+                            None => format!("Applied run {run}"),
+                        };
+                        let (renamed, failed) = (report.renamed(), report.failed());
+                        let counts = (renamed, failed, report.skipped());
+                        self.status = format!("run {run}: {renamed} renamed, {failed} failed");
+                        self.follow_renames(&report);
+                        let listed = dialogs::listed_indices(&report);
+                        let rest = dialogs::unlisted_rows(&report);
+                        self.overlay =
+                            Some(Overlay::Report { title, report, listed, rest, counts });
+                    }
+                    Err(error) => {
+                        self.run_error = Some(format!(
+                            "the run stopped: {error}; any renames that completed stay on \
+                             disk, and the journal holds their undo"
+                        ));
+                    }
+                }
+                // The names on disk have changed, so the preview is stale.
+                self.scan();
+            }
+            Done::Forgotten { result, sessions } => match result {
+                Ok(()) => {
+                    // A change landed, so every cached read is stale even if
+                    // the new list cannot be read back.
+                    self.history.forget_all();
+                    match sessions {
+                        Ok(sessions) => {
+                            self.sessions = sessions;
+                            self.journal_error = None;
+                            self.status = if self.sessions.is_empty() {
+                                "journal cleared".to_owned()
+                            } else {
+                                "journal updated".to_owned()
+                            };
+                        }
+                        Err(error) => {
+                            self.journal_error = Some(format!(
+                                "the journal was changed, but its runs could not be \
+                                 re-read: {error}"
+                            ));
+                        }
+                    }
+                }
+                Err(error) => {
+                    self.status = format!("the journal could not be changed: {error}");
+                }
+            },
         }
     }
 
@@ -614,6 +692,12 @@ impl App {
         }
         if not_nfc > 0 {
             ui.colored_label(warning(ui), format!("{not_nfc} not NFC"));
+        }
+        if let Some(error) = &self.run_error {
+            ui.colored_label(danger(ui), error.as_str());
+        }
+        if let Some(error) = &self.journal_error {
+            ui.colored_label(danger(ui), error.as_str());
         }
         if let Some(error) = &self.model.error {
             ui.colored_label(warning(ui), format!("warning: {error}"));
@@ -826,7 +910,11 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.poll(&ctx);
-        self.replan_if_due(&ctx);
+        // A modal shows numbers captured from the current plan; do not replace
+        // that plan until the modal is gone.
+        if self.overlay.is_none() {
+            self.replan_if_due(&ctx);
+        }
         self.persist();
 
         egui::Panel::left("renameant-rules")

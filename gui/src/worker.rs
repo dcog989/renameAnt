@@ -29,8 +29,8 @@ pub enum Job {
     Undo(ApplyOptions, RunId),
     /// One recorded rename of a run: `(from, to)` as the run wrote it.
     UndoOne(ApplyOptions, RunId, PathBuf, PathBuf),
-    /// Drops these runs from the journal. An empty list would be a no-op.
-    Forget(PathBuf, Vec<RunId>),
+    /// Drops this run from the journal.
+    Forget(PathBuf, RunId),
     /// Empties the journal.
     Clear(PathBuf),
 }
@@ -54,13 +54,15 @@ pub enum Picked {
 
 pub enum Done {
     /// The journal after startup: its runs, and why pruning failed if it did.
+    /// A read failure is an error, not an empty history.
     JournalLoaded {
-        sessions: Vec<Session>,
+        sessions: io::Result<Vec<Session>>,
         prune_error: Option<String>,
     },
     Scanned(io::Result<Scan>),
-    /// A stat pass. Paths it could not read are left out.
-    Statted(Vec<(PathBuf, FileMeta)>),
+    /// A stat pass. Paths it could not read are left out. The count is how many
+    /// paths were requested, so the app can tell the plan changed under it.
+    Statted(Vec<(PathBuf, FileMeta)>, usize),
     /// A file browser that closed.
     Picked(Picked),
     /// An apply or an undo. `undo_of` names the run that was reversed.
@@ -71,12 +73,12 @@ pub enum Done {
         /// the journal. `None` after a journal failure, where `sessions` is the
         /// full list instead.
         session: Option<Session>,
-        sessions: Vec<Session>,
+        sessions: io::Result<Vec<Session>>,
     },
     /// Runs removed from the journal, or the journal cleared.
     Forgotten {
         result: io::Result<()>,
-        sessions: Vec<Session>,
+        sessions: io::Result<Vec<Session>>,
     },
 }
 
@@ -129,15 +131,16 @@ fn serve(jobs: Receiver<Job>, done: Sender<Done>) {
         let message = match job {
             Job::LoadJournal(path) => {
                 let prune_error = Journal::prune(&path).err().map(|error| error.to_string());
-                Done::JournalLoaded { sessions: sessions_at(&path), prune_error }
+                Done::JournalLoaded { sessions: Journal::sessions(&path), prune_error }
             }
             Job::Scan(paths, recursive) => Done::Scanned(scan::scan_paths(&paths, recursive)),
             Job::Stat(paths) => {
+                let requested = paths.len();
                 let meta = paths
                     .iter()
                     .filter_map(|path| file_meta(path).map(|meta| (path.clone(), meta)))
                     .collect();
-                Done::Statted(meta)
+                Done::Statted(meta, requested)
             }
             Job::Apply(plan, options) => {
                 let result = apply::apply(&plan, &options);
@@ -151,13 +154,14 @@ fn serve(jobs: Receiver<Job>, done: Sender<Done>) {
                 let result = apply::undo_one(&options, run, &from, &to);
                 ran(Some(run), result, &options)
             }
-            Job::Forget(path, runs) => Done::Forgotten {
-                result: Journal::remove_runs(&path, &runs).map(|_| ()),
-                sessions: sessions_at(&path),
+            Job::Forget(path, run) => Done::Forgotten {
+                result: Journal::remove_runs(&path, &[run]).map(|_| ()),
+                sessions: Journal::sessions(&path),
             },
-            Job::Clear(path) => {
-                Done::Forgotten { result: Journal::clear(&path), sessions: sessions_at(&path) }
-            }
+            Job::Clear(path) => Done::Forgotten {
+                result: Journal::clear(&path),
+                sessions: Journal::sessions(&path),
+            },
         };
         if done.send(message).is_err() {
             return;
@@ -176,7 +180,11 @@ fn ran(undo_of: Option<RunId>, result: io::Result<ApplyReport>, options: &ApplyO
         undo_of,
         interrupted: false,
     });
-    let sessions = if result.is_err() { sessions_of(options) } else { Vec::new() };
+    let sessions = if result.is_err() {
+        Journal::sessions(&options.journal)
+    } else {
+        Ok(Vec::new())
+    };
     Done::Ran { undo_of, result, session, sessions }
 }
 
@@ -186,13 +194,4 @@ fn file_meta(path: &Path) -> Option<FileMeta> {
     let meta = fs::symlink_metadata(path).ok()?;
     let size = (!meta.is_dir()).then_some(meta.len());
     Some(FileMeta { size, mtime: meta.modified().ok() })
-}
-
-/// A journal that cannot be read is an empty history, not a lost run.
-fn sessions_of(options: &ApplyOptions) -> Vec<Session> {
-    sessions_at(&options.journal)
-}
-
-fn sessions_at(path: &Path) -> Vec<Session> {
-    Journal::sessions(path).unwrap_or_default()
 }
