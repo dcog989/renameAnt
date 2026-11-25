@@ -117,8 +117,7 @@ impl PlanModel {
         self.meta_loaded = false;
         // A removal is for a path, not for one scan: it survives a rescan of
         // the same tree and is dropped once the path is gone.
-        let present: HashSet<&Path> =
-            entries.iter().map(|entry| entry.path.as_path()).collect();
+        let present: HashSet<&Path> = entries.iter().map(|entry| entry.path.as_path()).collect();
         self.removed.retain(|path| present.contains(path.as_path()));
         self.not_utf8 =
             entries.iter().filter(|entry| !is_utf8(entry.name.as_os_str().as_bytes())).count();
@@ -436,15 +435,9 @@ mod tests {
             kind: renameant_core::scan::Kind::File,
         };
         let mut index = DirIndex::default();
-        index.insert(
-            PathBuf::from("/d"),
-            std::iter::once(std::ffi::OsString::from("a")).collect(),
-        );
-        let mut model = PlanModel {
-            entries: vec![entry("a")],
-            index: Some(index),
-            ..PlanModel::default()
-        };
+        index.insert(PathBuf::from("/d"), std::iter::once(std::ffi::OsString::from("a")).collect());
+        let mut model =
+            PlanModel { entries: vec![entry("a")], index: Some(index), ..PlanModel::default() };
         let rules = RuleSet {
             rules: vec![Rule::InsertRemove {
                 op: InsertRemoveOp::AddSuffix(b"b".to_vec()),

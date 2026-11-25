@@ -242,8 +242,7 @@ pub fn apply(plan: &Plan, options: &ApplyOptions) -> io::Result<ApplyReport> {
             // them would leave files under generated names. Put every staged
             // name back and skip the run.
             for (index, temp) in staged.iter().rev() {
-                let outcome =
-                    rename(temp, &plan.rows[*index].src, false, &mut journal, run)?;
+                let outcome = rename(temp, &plan.rows[*index].src, false, &mut journal, run)?;
                 rows[*index].outcome = match outcome {
                     Ok(()) => Outcome::Skipped,
                     Err(error) => Outcome::Failed(error),
@@ -783,8 +782,7 @@ mod tests {
         let mut journal =
             Journal::open_syncing(full.to_path_buf(), 1).expect("open /dev/full for writing");
 
-        let result =
-            rename(&fixture.dir.join("a"), &fixture.dir.join("b"), false, &mut journal, 1);
+        let result = rename(&fixture.dir.join("a"), &fixture.dir.join("b"), false, &mut journal, 1);
 
         assert!(result.is_err(), "a record that cannot be written aborts the run");
         assert!(fixture.exists("a"), "the name is back where it started");

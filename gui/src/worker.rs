@@ -167,11 +167,7 @@ fn serve(jobs: Receiver<Job>, done: Sender<Done>) {
 
 /// A finished run and the session it added. Only a journal failure needs the
 /// full list, because the run may then have a `begin` with no `end`.
-fn ran(
-    undo_of: Option<RunId>,
-    result: io::Result<ApplyReport>,
-    options: &ApplyOptions,
-) -> Done {
+fn ran(undo_of: Option<RunId>, result: io::Result<ApplyReport>, options: &ApplyOptions) -> Done {
     let session = result.as_ref().ok().map(|report| Session {
         run: report.run,
         at: report.at,

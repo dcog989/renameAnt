@@ -150,11 +150,7 @@ struct LockedJournal {
 /// `~/.local/state/renameant/journal.jsonl`.
 pub fn default_path() -> io::Result<PathBuf> {
     let base = match std::env::var_os("XDG_STATE_HOME") {
-        Some(value)
-            if !value.is_empty() && Path::new(&value).is_absolute() =>
-        {
-            PathBuf::from(value)
-        }
+        Some(value) if !value.is_empty() && Path::new(&value).is_absolute() => PathBuf::from(value),
         _ => {
             let home = std::env::var_os("HOME").ok_or_else(|| {
                 io::Error::new(
@@ -267,12 +263,8 @@ impl Journal {
         // The lock file stays put when the journal is rewritten. Released when
         // this `Journal` drops.
         let lock = lock_file(&path, FlockOperation::LockExclusive)?;
-        let mut file = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .append(true)
-            .mode(0o600)
-            .open(&path)?;
+        let mut file =
+            OpenOptions::new().create(true).read(true).append(true).mode(0o600).open(&path)?;
         if lock.is_none() {
             flock(&file, FlockOperation::LockExclusive)?;
         }
@@ -587,8 +579,7 @@ impl Journal {
         // Removing a stale temp first also unlinks a planted symlink; creating
         // with `create_new` then never follows one.
         let _ = std::fs::remove_file(&temp);
-        let mut out =
-            OpenOptions::new().write(true).create_new(true).mode(0o600).open(&temp)?;
+        let mut out = OpenOptions::new().write(true).create_new(true).mode(0o600).open(&temp)?;
         let result = match write(&mut out) {
             Ok(false) => Ok(false),
             Ok(true) => {
@@ -1001,7 +992,10 @@ mod tests {
         let temp = tempfile::tempdir().expect("temp dir");
         let path = temp.path().join("state").join("instance.lock");
         let held = lock_instance(&path).expect("lock").expect("the first holder");
-        assert!(lock_instance(&path).expect("second lock").is_none(), "a second instance is refused");
+        assert!(
+            lock_instance(&path).expect("second lock").is_none(),
+            "a second instance is refused"
+        );
         drop(held);
         assert!(lock_instance(&path).expect("third lock").is_some(), "the lock is released");
     }
@@ -1115,8 +1109,7 @@ mod tests {
             |path: &Path| std::fs::metadata(path).expect("metadata").permissions().mode() & 0o777;
         assert_eq!(mode(&path), 0o600, "a new journal is private");
         // A rewrite must keep whatever the user set, not recreate the default.
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640))
-            .expect("chmod");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).expect("chmod");
         assert_eq!(Journal::prune(&path).expect("prune"), 1);
         assert_eq!(mode(&path), 0o640);
     }

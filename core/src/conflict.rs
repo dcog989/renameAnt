@@ -232,9 +232,7 @@ fn mark_target_exists(
             source_start + sources[source_start..].iter().take_while(|it| it.dir == dir).count();
         let mut folded_sources: HashMap<Vec<u8>, usize> = HashMap::new();
         for from in &sources[source_start..source_end] {
-            folded_sources
-                .entry(osname::case_fold(from.name.as_bytes()))
-                .or_insert(from.row);
+            folded_sources.entry(osname::case_fold(from.name.as_bytes())).or_insert(from.row);
         }
         source_start = source_end;
 
@@ -1044,8 +1042,7 @@ mod tests {
             assert_eq!(rows[at(name)].status, Status::Conflict(ConflictKind::TargetExists));
         }
 
-        let positions: Vec<usize> =
-            ["abc", "bca", "cab"].iter().map(|&name| at(name)).collect();
+        let positions: Vec<usize> = ["abc", "bca", "cab"].iter().map(|&name| at(name)).collect();
         let first = *positions.iter().min().unwrap();
         let last = *positions.iter().max().unwrap();
         assert_eq!(last - first, 2, "the cycle is one contiguous run");

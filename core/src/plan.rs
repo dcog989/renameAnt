@@ -584,10 +584,7 @@ mod tests {
             }],
         };
 
-        assert!(matches!(
-            plan(&entries, &index, &rules),
-            Err(RuleError::SequenceOverflow { .. })
-        ));
+        assert!(matches!(plan(&entries, &index, &rules), Err(RuleError::SequenceOverflow { .. })));
     }
 
     #[test]
@@ -609,10 +606,8 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         write(temp.path(), &["a.txt", "b.txt", "c.txt"]);
         let (entries, index) = scan_dir(temp.path()).expect("scan");
-        let kept: Vec<&Entry> = entries
-            .iter()
-            .filter(|entry| entry.name.as_os_str() != OsStr::new("a.txt"))
-            .collect();
+        let kept: Vec<&Entry> =
+            entries.iter().filter(|entry| entry.name.as_os_str() != OsStr::new("a.txt")).collect();
 
         let plan = plan(
             &kept,

@@ -30,15 +30,14 @@ fn main() -> eframe::Result {
             return quit(&format!("renameAnt could not find its state directory:\n{error}"));
         }
     };
-    let _instance = match renameant_core::journal::lock_instance(
-        &journal.with_file_name("instance.lock"),
-    ) {
-        Ok(Some(lock)) => lock,
-        Ok(None) => return quit("renameAnt is already running."),
-        Err(error) => {
-            return quit(&format!("renameAnt could not lock its state directory:\n{error}"));
-        }
-    };
+    let _instance =
+        match renameant_core::journal::lock_instance(&journal.with_file_name("instance.lock")) {
+            Ok(Some(lock)) => lock,
+            Ok(None) => return quit("renameAnt is already running."),
+            Err(error) => {
+                return quit(&format!("renameAnt could not lock its state directory:\n{error}"));
+            }
+        };
     let options = eframe::NativeOptions {
         viewport: ViewportBuilder::default()
             .with_app_id("renameant")

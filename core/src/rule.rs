@@ -723,9 +723,8 @@ mod tests {
 
     #[test]
     fn title_keeps_apostrophes_inside_words() {
-        let title = |name| {
-            run(vec![Rule::Case { style: CaseStyle::Title, target: Target::Whole }], name)
-        };
+        let title =
+            |name| run(vec![Rule::Case { style: CaseStyle::Title, target: Target::Whole }], name);
         assert_eq!(title("don't stop"), "Don't Stop");
         assert_eq!(title("O'Brien's file"), "O'Brien's File");
         assert_eq!(title("rock'n'roll"), "Rock'n'Roll");

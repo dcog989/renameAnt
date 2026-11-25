@@ -449,7 +449,8 @@ impl App {
                     if let Some(error) = prune_error {
                         self.append_status(&format!("the journal could not be pruned: {error}"));
                     }
-                    let interrupted = self.sessions.iter().filter(|session| session.interrupted).count();
+                    let interrupted =
+                        self.sessions.iter().filter(|session| session.interrupted).count();
                     if interrupted > 0 {
                         self.append_status(&format!(
                             "{interrupted} interrupted {} in the journal: reverse {} from the journal",
@@ -491,8 +492,7 @@ impl App {
                             self.follow_renames(&report);
                             let listed = dialogs::listed_indices(&report);
                             let rest = dialogs::unlisted_rows(&report);
-                            self.overlay =
-                                Some(Overlay::Report { title, report, listed, rest });
+                            self.overlay = Some(Overlay::Report { title, report, listed, rest });
                         }
                         Err(error) => {
                             self.status = format!(
@@ -674,10 +674,8 @@ impl App {
         let (files, folders, actionable) = (totals.files, totals.folders, totals.actionable);
         ui.horizontal(|ui| {
             ui.label(format!("{files} files / {folders} folders to rename"));
-            let ready = actionable > 0
-                && !self.busy
-                && self.model.error.is_none()
-                && !self.scan_truncated;
+            let ready =
+                actionable > 0 && !self.busy && self.model.error.is_none() && !self.scan_truncated;
             if ui
                 .add_enabled(
                     ready,
