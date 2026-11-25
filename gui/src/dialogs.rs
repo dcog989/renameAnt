@@ -1,8 +1,7 @@
 //! The modals: the apply confirmation, the undo confirmation and a run report.
 //!
-//! The confirmation reads "Apply N of M" and names what will be
-//! skipped, and the overwrite opt-in is called out as irrecoverable. None of
-//! this writes anything; it only reports the user's choice back to the app.
+//! The confirmation reads "Apply N of M" and names what will be skipped. None
+//! of this writes anything; it only reports the user's choice back to the app.
 
 use std::path::{Path, PathBuf};
 
@@ -38,17 +37,10 @@ pub fn confirm_apply(
     ui: &mut Ui,
     skipped_rows: &[PlanRow],
     totals: Totals,
-    overwrite: bool,
     fast: bool,
 ) -> Choice {
     let (actionable, candidates, skipped) = (totals.actionable, totals.candidates, totals.skipped);
     ui.heading(format!("Apply {actionable} of {candidates}"));
-    if overwrite {
-        ui.colored_label(
-            danger(ui),
-            "Overwrite is on: existing files are clobbered, and undo cannot bring them back.",
-        );
-    }
     if fast {
         ui.colored_label(
             warning(ui),
@@ -120,23 +112,20 @@ pub fn show_report(
     ui: &mut Ui,
     title: &str,
     report: &ApplyReport,
+    counts: (usize, usize, usize),
     listed: &[usize],
     rest: usize,
 ) -> Choice {
+    let (renamed, failed, skipped) = counts;
     ui.heading(title);
-    ui.label(format!(
-        "{} renamed, {} failed, {} skipped",
-        report.renamed(),
-        report.failed(),
-        report.skipped()
-    ));
+    ui.label(format!("{renamed} renamed, {failed} failed, {skipped} skipped"));
     if report.aborted {
         ui.colored_label(
             danger(ui),
             "The run aborted: this filesystem rejected RENAME_NOREPLACE, and nothing falls back to a rename that could overwrite. The renames already done are kept.",
         );
     }
-    if report.failed() > 0 {
+    if failed > 0 {
         ui.colored_label(
             warning(ui),
             "Failed rows are listed below. Nothing is rolled back: undo the run to get the old names back.",

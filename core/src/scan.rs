@@ -13,6 +13,7 @@ use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
+use crate::apply::is_temp_name;
 use crate::osname;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -232,10 +233,14 @@ fn walk(dir: &Path, recurse: bool, scan: &mut Scan, limit: usize, rows: bool) ->
             }
         };
         names.insert(name.clone());
-        if rows {
+        // A name left behind by an interrupted staged run is the app's own and
+        // must not become a row; it stays in the index so a destination on it
+        // still reads as taken. Its contents are not scanned either.
+        let temp = is_temp_name(&name);
+        if rows && !temp {
             scan.entries.push(Entry { path: path.clone(), name, kind });
         }
-        if recurse && kind == Kind::Dir {
+        if recurse && kind == Kind::Dir && !temp {
             subdirs.push(path);
         }
     }
@@ -422,6 +427,23 @@ mod tests {
         assert!(!scan.truncated);
         assert!(root_scan.entries.is_empty());
         assert_eq!(root_scan.unreadable, vec![locked]);
+    }
+
+    #[test]
+    fn a_generated_temp_name_is_not_a_row_but_stays_taken() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path();
+        fs::write(root.join(".renameant-tmp-1-0-0"), b"x").unwrap();
+        fs::write(root.join("keep"), b"x").unwrap();
+
+        let (entries, index) = scan_dir(root).expect("scan");
+
+        assert!(!entries.iter().any(|entry| entry.name == ".renameant-tmp-1-0-0"));
+        assert!(entries.iter().any(|entry| entry.name == "keep"));
+        assert!(
+            index.names(root).expect("index").contains(&OsString::from(".renameant-tmp-1-0-0")),
+            "a destination on the temp name still reads as taken"
+        );
     }
 
     #[test]

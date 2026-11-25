@@ -268,6 +268,12 @@ impl Journal {
         if lock.is_none() {
             flock(&file, FlockOperation::LockExclusive)?;
         }
+        // The journal's own name must survive a crash too, or the first run's
+        // records can vanish with the file that held them. One directory sync
+        // per run, not per record.
+        if let Some(parent) = path.parent() {
+            fsync(&File::open(parent)?)?;
+        }
         // A crash or a short write can leave half a record at the end. Drop it
         // before anything appends to it; otherwise the next record would turn
         // the truncated tail into a corrupt line in the middle.

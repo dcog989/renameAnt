@@ -264,7 +264,7 @@ fn detail(
             }
             let reversed = evidence.is_some_and(|evidence| is_reversed(evidence, from, to));
             ui.horizontal(|ui| {
-                let staged = is_staged(from) || is_staged(to);
+                let staged = is_staged(session.run, from) || is_staged(session.run, to);
                 let enabled = !busy && !reversed && !staged;
                 let mut response = ui
                     .add_enabled(enabled, egui::Button::new("Undo"))

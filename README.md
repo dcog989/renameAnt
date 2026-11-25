@@ -8,7 +8,7 @@ Linux file / directory bulk renamer GUI. Provides fast and safe renaming with mu
 
 - **Rules**: default and custom rules
 - **Preview**: before/after per row; conflicts, taken names and invalid names are reported before anything is written.
-- **Safety**: dry run until confirmed, no overwrite unless opted in, cycles and case-only renames staged through a temp name.
+- **Safety**: dry run until confirmed, never overwrites an existing name, cycles and case-only renames staged through a temp name.
 - **Undo**: append-only journal; reverse any run or one row of it, partial runs included. Runs older than 60 days are pruned at startup; the newest run is always kept.
 - **Files**: folders or single files, optional subdirectories, kind and name filters, column sort, non-UTF-8 names kept as bytes.
 - **Speed**: fast mode defers size and modified reads and batches journal syncs.

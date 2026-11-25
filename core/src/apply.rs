@@ -1,5 +1,6 @@
 //! Two-phase execution, syscalls and journaling.
 
+use std::ffi::OsStr;
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -34,6 +35,8 @@ pub enum ApplyError {
         "this filesystem rejected RENAME_NOREPLACE, and renameAnt never falls back to a rename that could overwrite"
     )]
     NotSupported,
+    #[error("could not be put back; the file is at {}", .0.display())]
+    Staged(PathBuf),
     #[error(transparent)]
     Io(#[from] io::Error),
 }
@@ -118,10 +121,10 @@ impl ApplyReport {
     }
 
     pub fn outcome(&self) -> RunOutcome {
-        if self.failed() == 0 {
-            RunOutcome::Completed
-        } else if self.renamed() == 0 {
+        if self.renamed() == 0 {
             RunOutcome::Aborted
+        } else if self.failed() == 0 {
+            RunOutcome::Completed
         } else {
             RunOutcome::Partial
         }
@@ -131,9 +134,6 @@ impl ApplyReport {
 #[derive(Clone, Debug)]
 pub struct ApplyOptions {
     pub journal: PathBuf,
-    /// The irrecoverable overwrite opt-in. The session is marked so in
-    /// the journal, and undo cannot restore a file it destroyed.
-    pub overwrite: bool,
     /// Fast mode: batch the journal's `fsync` instead of writing one per
     /// rename. The renames themselves are unaffected; what a crash can lose is
     /// the last batch of undo records. A staged rename — a cycle or a
@@ -144,7 +144,7 @@ pub struct ApplyOptions {
 
 impl ApplyOptions {
     pub fn new(journal: PathBuf) -> Self {
-        ApplyOptions { journal, overwrite: false, batched_sync: false }
+        ApplyOptions { journal, batched_sync: false }
     }
 
     /// Records between two journal `fsync`s.
@@ -158,9 +158,9 @@ impl ApplyOptions {
 
 /// Executes `plan` in apply order.
 ///
-/// Every write goes through `renameat2(RENAME_NOREPLACE)` unless the overwrite
-/// opt-in is set, each completed rename is `fsync`ed before the next begins
-/// (unless [`ApplyOptions::batched_sync`] batches those, see
+/// Every write goes through `renameat2(RENAME_NOREPLACE)`, each completed
+/// rename is `fsync`ed before the next begins (unless
+/// [`ApplyOptions::batched_sync`] batches those, see
 /// [`crate::journal::BATCHED_SYNC_EVERY`]), and an `io::Error` return means the
 /// journal failed and the run aborted. Any other failure is per row: partial
 /// application is a normal outcome and the completed renames stay undoable.
@@ -171,7 +171,7 @@ pub fn apply(plan: &Plan, options: &ApplyOptions) -> io::Result<ApplyReport> {
         run,
         at: now(),
         planned: plan.actionable(),
-        overwrite: options.overwrite,
+        overwrite: false,
         undo_of: None,
     })?;
     // The run's own mark is durable before the first rename even when the
@@ -197,13 +197,7 @@ pub fn apply(plan: &Plan, options: &ApplyOptions) -> io::Result<ApplyReport> {
         }
 
         if !plan.rows[at].via_temp {
-            let outcome = rename(
-                &plan.rows[at].src,
-                &plan.rows[at].dst,
-                options.overwrite,
-                &mut journal,
-                run,
-            )?;
+            let outcome = rename(&plan.rows[at].src, &plan.rows[at].dst, &mut journal, run)?;
             if let Err(ApplyError::NotSupported) = &outcome {
                 aborted = true;
             }
@@ -225,7 +219,26 @@ pub fn apply(plan: &Plan, options: &ApplyOptions) -> io::Result<ApplyReport> {
         let mut stage_failed = false;
         for (offset, row) in plan.rows[at..end].iter().enumerate() {
             let index = at + offset;
-            match stage(&row.src, run, index, &mut journal)? {
+            let outcome = match stage(&row.src, run, index, &mut journal) {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    // The journal itself failed. Put every peer staged so far
+                    // back with raw renames: a file must not stay hidden under a
+                    // generated name because no record could be written. The
+                    // row that just failed has already been put back by `stage`.
+                    let stranded = restore_staged(plan, &staged);
+                    return Err(match stranded {
+                        0 => error,
+                        count => io::Error::new(
+                            error.kind(),
+                            format!(
+                                "{error} ({count} staged names could not be put back; undo the interrupted run)"
+                            ),
+                        ),
+                    });
+                }
+            };
+            match outcome {
                 Err(error) => {
                     if matches!(error, ApplyError::NotSupported) {
                         aborted = true;
@@ -242,22 +255,32 @@ pub fn apply(plan: &Plan, options: &ApplyOptions) -> io::Result<ApplyReport> {
             // them would leave files under generated names. Put every staged
             // name back and skip the run.
             for (index, temp) in staged.iter().rev() {
-                let outcome = rename(temp, &plan.rows[*index].src, false, &mut journal, run)?;
+                let outcome = rename(temp, &plan.rows[*index].src, &mut journal, run)?;
                 rows[*index].outcome = match outcome {
                     Ok(()) => Outcome::Skipped,
-                    Err(error) => Outcome::Failed(error),
+                    Err(_) => Outcome::Failed(ApplyError::Staged(temp.clone())),
                 };
             }
             at = end;
             continue;
         }
         for (index, temp) in staged.iter().rev() {
-            let outcome =
-                rename(temp, &plan.rows[*index].dst, options.overwrite, &mut journal, run)?;
-            if let Err(ApplyError::NotSupported) = &outcome {
-                aborted = true;
-            }
-            rows[*index].outcome = as_outcome(outcome);
+            let outcome = rename(temp, &plan.rows[*index].dst, &mut journal, run)?;
+            rows[*index].outcome = match outcome {
+                Ok(()) => Outcome::Renamed,
+                Err(error) => {
+                    if matches!(error, ApplyError::NotSupported) {
+                        aborted = true;
+                    }
+                    // A landing can fail after the source was moved aside. Put
+                    // the name back when it is still free; otherwise the report
+                    // must name the temp path, or the file looks lost.
+                    match rename(temp, &plan.rows[*index].src, &mut journal, run)? {
+                        Ok(()) => Outcome::Skipped,
+                        Err(_) => Outcome::Failed(ApplyError::Staged(temp.clone())),
+                    }
+                }
+            };
         }
         at = end;
     }
@@ -272,8 +295,7 @@ pub fn apply(plan: &Plan, options: &ApplyOptions) -> io::Result<ApplyReport> {
 /// inverse records to the same journal so redo is just an undo of the undo.
 ///
 /// Undo is not transactional: a row whose file is no longer where the journal
-/// expects it fails and the rest continue. It never overwrites, and it cannot
-/// restore a file the overwrite opt-in destroyed.
+/// expects it fails and the rest continue. It never overwrites.
 pub fn undo(options: &ApplyOptions, target: RunId) -> io::Result<ApplyReport> {
     // Lock before reading: the lock is held for the whole undo, so a concurrent
     // apply cannot claim this undo's run id.
@@ -286,13 +308,21 @@ pub fn undo(options: &ApplyOptions, target: RunId) -> io::Result<ApplyReport> {
 /// Reverses one recorded rename of `target`, leaving the rest of the run alone.
 ///
 /// The pair must be one the run recorded, so a stale row can never move a file
-/// the run never renamed. The undo is a run of its own and can be undone.
+/// the run never renamed, and it must not be half of a staged pair, which is
+/// only reversible with the whole run. The undo is a run of its own and can be
+/// undone.
 pub fn undo_one(
     options: &ApplyOptions,
     target: RunId,
     from: &Path,
     to: &Path,
 ) -> io::Result<ApplyReport> {
+    if is_staged(target, from) || is_staged(target, to) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "a staged rename must be reversed with its whole run",
+        ));
+    }
     let journal = Journal::open_syncing(options.journal.clone(), options.sync_every())?;
     let recorded = Journal::renames_with_id(&options.journal, target)?
         .into_iter()
@@ -312,6 +342,12 @@ fn reverse(
     target: RunId,
     completed: Vec<RecordedRename>,
 ) -> io::Result<ApplyReport> {
+    if completed.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("run {target} has no renames to reverse"),
+        ));
+    }
     let run = Journal::next_run_id(&options.journal)?;
     journal.append(&JournalRecord::Begin {
         run,
@@ -326,7 +362,7 @@ fn reverse(
     for record in &completed {
         let outcome = match record.id {
             Some(id) if FileId::of(&record.to) != Some(id) => Err(ApplyError::FileChanged),
-            _ => rename(&record.to, &record.from, false, &mut journal, run)?,
+            _ => rename(&record.to, &record.from, &mut journal, run)?,
         };
         rows.push(ApplyRow {
             src: record.to.clone(),
@@ -342,10 +378,38 @@ fn reverse(
     Ok(report)
 }
 
-/// Whether `path` carries a name [`stage`] generated. Such a row is one half of
-/// a rename that must be reversed as a whole, never alone.
-pub fn is_staged(path: &Path) -> bool {
-    path.file_name().is_some_and(|name| name.as_encoded_bytes().starts_with(TEMP_PREFIX.as_bytes()))
+/// Whether `name` has the exact shape [`stage`] generates, for any run.
+pub(crate) fn is_temp_name(name: &OsStr) -> bool {
+    let Some(rest) = name.as_encoded_bytes().strip_prefix(TEMP_PREFIX.as_bytes()) else {
+        return false;
+    };
+    let Some(rest) = rest.strip_prefix(b"-") else { return false };
+    let mut parts = rest.split(|byte| *byte == b'-');
+    matches!(
+        (parts.next(), parts.next(), parts.next(), parts.next()),
+        (Some(_run), Some(at), Some(attempt), None) if digits(at) && digits(attempt)
+    )
+}
+
+/// Whether `path` carries the name [`stage`] generated for `run`. Such a row is
+/// one half of a rename that must be reversed as a whole, never alone.
+pub fn is_staged(run: RunId, path: &Path) -> bool {
+    let Some(name) = path.file_name() else { return false };
+    let Some(rest) = name.as_encoded_bytes().strip_prefix(TEMP_PREFIX.as_bytes()) else {
+        return false;
+    };
+    let Some(rest) = rest.strip_prefix(b"-") else { return false };
+    let Some(rest) = rest.strip_prefix(run.to_string().as_bytes()) else { return false };
+    let Some(rest) = rest.strip_prefix(b"-") else { return false };
+    let mut parts = rest.split(|byte| *byte == b'-');
+    matches!(
+        (parts.next(), parts.next(), parts.next()),
+        (Some(at), Some(attempt), None) if digits(at) && digits(attempt)
+    )
+}
+
+fn digits(part: &[u8]) -> bool {
+    !part.is_empty() && part.iter().all(u8::is_ascii_digit)
 }
 
 /// The result of one rename.
@@ -357,23 +421,13 @@ type RenameResult = io::Result<Result<(), ApplyError>>;
 /// The result of staging one name aside: `Ok` names the generated path.
 type StageResult = io::Result<Result<PathBuf, ApplyError>>;
 
-fn rename(
-    src: &Path,
-    dst: &Path,
-    overwrite: bool,
-    journal: &mut Journal,
-    run: RunId,
-) -> RenameResult {
+fn rename(src: &Path, dst: &Path, journal: &mut Journal, run: RunId) -> RenameResult {
     // A journal entry is later replayed from another working directory.
     if !src.is_absolute() || !dst.is_absolute() {
         return Ok(Err(ApplyError::RelativePath));
     }
 
-    let result = if overwrite {
-        rustix::fs::rename(src, dst)
-    } else {
-        renameat_with(CWD, src, CWD, dst, RenameFlags::NOREPLACE)
-    };
+    let result = renameat_with(CWD, src, CWD, dst, RenameFlags::NOREPLACE);
 
     match result {
         Err(errno) => Ok(Err(ApplyError::from(errno))),
@@ -385,12 +439,9 @@ fn rename(
                 to: dst.to_path_buf(),
                 id,
             }) {
-                // No record, no rename: put the file back when nothing was
-                // clobbered. The overwrite opt-in already made restore
-                // impossible, so it keeps the file at its new name.
-                if !overwrite {
-                    let _ = renameat_with(CWD, dst, CWD, src, RenameFlags::NOREPLACE);
-                }
+                // No record, no rename: put the file back. `NOREPLACE` means a
+                // name that came back in the meantime is left alone.
+                let _ = renameat_with(CWD, dst, CWD, src, RenameFlags::NOREPLACE);
                 return Err(error);
             }
             Ok(Ok(()))
@@ -400,8 +451,8 @@ fn rename(
 
 /// Moves `src` aside under a generated name in its own directory.
 ///
-/// Staging always uses `RENAME_NOREPLACE` even with the overwrite opt-in: the
-/// generated name is renameAnt's own and must not clobber anyone else's file.
+/// Staging always uses `RENAME_NOREPLACE`: the generated name is renameAnt's
+/// own and must not clobber anyone else's file.
 ///
 /// The aside rename is the one step a crash cannot describe from the other
 /// side — the file is at neither `src` nor its destination — so its record is
@@ -411,7 +462,7 @@ fn stage(src: &Path, run: RunId, at: usize, journal: &mut Journal) -> StageResul
     let parent = src.parent().unwrap_or_else(|| Path::new("."));
     for attempt in 0..TEMP_ATTEMPTS {
         let temp = parent.join(format!("{TEMP_PREFIX}-{run}-{at}-{attempt}"));
-        let outcome = match rename(src, &temp, false, journal, run) {
+        let outcome = match rename(src, &temp, journal, run) {
             Ok(outcome) => outcome,
             Err(error) => return Err(unstage(&temp, src, error)),
         };
@@ -434,6 +485,26 @@ fn stage(src: &Path, run: RunId, at: usize, journal: &mut Journal) -> StageResul
 fn unstage(temp: &Path, src: &Path, error: io::Error) -> io::Error {
     let _ = renameat_with(CWD, temp, CWD, src, RenameFlags::NOREPLACE);
     error
+}
+
+/// Puts every peer staged before a journal failure back under its source name.
+/// Raw renames only: the journal is the thing that failed, so no record can be
+/// written. Returns how many could not be put back.
+fn restore_staged(plan: &Plan, staged: &[(usize, PathBuf)]) -> usize {
+    staged
+        .iter()
+        .rev()
+        .filter(|(index, temp)| {
+            renameat_with(
+                CWD,
+                temp.as_path(),
+                CWD,
+                plan.rows[*index].src.as_path(),
+                RenameFlags::NOREPLACE,
+            )
+            .is_err()
+        })
+        .count()
 }
 
 fn as_outcome(result: Result<(), ApplyError>) -> Outcome {
@@ -488,6 +559,16 @@ mod tests {
         vec![Rule::InsertRemove {
             op: InsertRemoveOp::AddPrefix(text.as_bytes().to_vec()),
             target: Target::Whole,
+        }]
+    }
+
+    /// Swaps the last two bytes of each name, so `ab` and `ba` form a cycle.
+    fn swap() -> Vec<Rule> {
+        vec![Rule::Regex {
+            pattern: "^(.+)(.)$".into(),
+            replacement: "${2}${1}".into(),
+            target: Target::Whole,
+            path: false,
         }]
     }
 
@@ -562,6 +643,7 @@ mod tests {
 
         assert_eq!(report.renamed(), 0);
         assert_eq!(report.skipped(), 2);
+        assert_eq!(report.outcome(), RunOutcome::Aborted, "nothing was renamed");
         assert!(fixture.exists("a.txt"));
         assert!(fixture.exists("b.txt"));
     }
@@ -569,12 +651,7 @@ mod tests {
     #[test]
     fn a_cycle_goes_through_a_temp_name_and_leaves_none_behind() {
         let fixture = fixture(&["ab", "ba"]);
-        let rules = vec![Rule::Regex {
-            pattern: "^(.+)(.)$".into(),
-            replacement: "${2}${1}".into(),
-            target: Target::Whole,
-            path: false,
-        }];
+        let rules = swap();
 
         let report = apply(&fixture.plan(rules), &fixture.options).expect("apply");
 
@@ -619,12 +696,7 @@ mod tests {
         // Both cycles end up in one contiguous staged run, which must not be
         // mistaken for a single four-name cycle.
         let fixture = fixture(&["ab", "ba", "cd", "dc"]);
-        let rules = vec![Rule::Regex {
-            pattern: "^(.+)(.)$".into(),
-            replacement: "${2}${1}".into(),
-            target: Target::Whole,
-            path: false,
-        }];
+        let rules = swap();
 
         let report = apply(&fixture.plan(rules), &fixture.options).expect("apply");
 
@@ -697,12 +769,7 @@ mod tests {
     #[test]
     fn undo_reverses_a_cycle_too() {
         let fixture = fixture(&["ab", "ba"]);
-        let rules = vec![Rule::Regex {
-            pattern: "^(.+)(.)$".into(),
-            replacement: "${2}${1}".into(),
-            target: Target::Whole,
-            path: false,
-        }];
+        let rules = swap();
         let first = apply(&fixture.plan(rules), &fixture.options).expect("apply");
 
         let undone = undo(&fixture.options, first.run).expect("undo");
@@ -767,8 +834,10 @@ mod tests {
 
     #[test]
     fn a_staged_name_is_recognized_so_it_is_never_undone_alone() {
-        assert!(is_staged(Path::new("/tmp/.renameant-tmp-1-0-0")));
-        assert!(!is_staged(Path::new("/tmp/a")));
+        assert!(is_staged(1, Path::new("/tmp/.renameant-tmp-1-0-0")));
+        assert!(!is_staged(2, Path::new("/tmp/.renameant-tmp-1-0-0")), "another run's name");
+        assert!(!is_staged(1, Path::new("/tmp/.renameant-tmp-old")), "not the generated shape");
+        assert!(!is_staged(1, Path::new("/tmp/a")));
     }
 
     #[test]
@@ -782,7 +851,7 @@ mod tests {
         let mut journal =
             Journal::open_syncing(full.to_path_buf(), 1).expect("open /dev/full for writing");
 
-        let result = rename(&fixture.dir.join("a"), &fixture.dir.join("b"), false, &mut journal, 1);
+        let result = rename(&fixture.dir.join("a"), &fixture.dir.join("b"), &mut journal, 1);
 
         assert!(result.is_err(), "a record that cannot be written aborts the run");
         assert!(fixture.exists("a"), "the name is back where it started");
@@ -811,12 +880,7 @@ mod tests {
     #[test]
     fn a_failed_stage_puts_the_staged_peers_back() {
         let fixture = fixture(&["ab", "ba"]);
-        let rules = vec![Rule::Regex {
-            pattern: "^(.+)(.)$".into(),
-            replacement: "${2}${1}".into(),
-            target: Target::Whole,
-            path: false,
-        }];
+        let rules = swap();
         let plan = fixture.plan(rules);
         // The plan is built, then one source disappears before apply runs.
         fs::remove_file(fixture.dir.join("ba")).expect("remove the second source");
@@ -835,15 +899,118 @@ mod tests {
     }
 
     #[test]
-    fn the_overwrite_opt_in_is_recorded_so_the_session_is_irrecoverable() {
+    fn undo_one_refuses_half_of_a_staged_pair() {
+        let fixture = fixture(&["ab", "ba"]);
+        let first = apply(&fixture.plan(swap()), &fixture.options).expect("apply");
+        let landed = Journal::renames(&fixture.options.journal, first.run)
+            .expect("renames")
+            .into_iter()
+            .find(|(from, _)| is_staged(first.run, from))
+            .expect("a landed half");
+
+        let refused = undo_one(&fixture.options, first.run, &landed.0, &landed.1);
+
+        assert!(refused.is_err());
+        assert_eq!(
+            Journal::sessions(&fixture.options.journal).expect("sessions").len(),
+            1,
+            "a refused undo writes no run"
+        );
+        assert!(fixture.exists("ab"));
+        assert!(fixture.exists("ba"));
+    }
+
+    #[test]
+    fn undo_of_a_run_with_no_renames_is_refused() {
         let fixture = fixture(&["a"]);
-        let mut options = fixture.options.clone();
-        options.overwrite = true;
 
-        apply(&fixture.plan(prefix("p-")), &options).expect("apply");
+        let refused = undo(&fixture.options, 9);
 
-        let sessions = Journal::sessions(&fixture.options.journal).expect("sessions");
-        assert!(sessions[0].overwrite);
+        assert!(refused.is_err());
+        assert!(Journal::sessions(&fixture.options.journal).expect("sessions").is_empty());
+    }
+
+    #[test]
+    fn undo_puts_back_a_name_staged_before_a_crash() {
+        let fixture = fixture(&["ab", "ba"]);
+        let src = fixture.dir.join("ab");
+        let temp = fixture.dir.join(format!("{TEMP_PREFIX}-1-0-0"));
+        fs::rename(&src, &temp).expect("stage aside");
+        let id = FileId::of(&temp);
+        let mut journal = Journal::open(fixture.options.journal.clone()).expect("open");
+        journal
+            .append(&JournalRecord::Begin {
+                run: 1,
+                at: 0,
+                planned: 2,
+                overwrite: false,
+                undo_of: None,
+            })
+            .expect("begin");
+        journal
+            .append(&JournalRecord::Rename { run: 1, from: src.clone(), to: temp, id })
+            .expect("record");
+        drop(journal);
+
+        let undone = undo(&fixture.options, 1).expect("undo");
+
+        assert_eq!(undone.renamed(), 1);
+        assert!(fixture.exists("ab"), "the staged name is back at its source");
+    }
+
+    #[test]
+    fn a_failed_landing_puts_the_file_back_at_its_source() {
+        let fixture = fixture(&["a"]);
+        let blocked = fixture.dir.join("blocked");
+        fs::create_dir(&blocked).expect("destination directory");
+        // A hand-built plan: the destination exists, so landing must fail after
+        // the source has been staged aside.
+        let plan = Plan {
+            rows: vec![crate::plan::PlanRow {
+                src: fixture.dir.join("a"),
+                dst: blocked.clone(),
+                status: Status::Ok,
+                via_temp: true,
+            }],
+        };
+
+        let report = apply(&plan, &fixture.options).expect("apply");
+
+        assert_eq!(report.renamed(), 0);
+        assert_eq!(report.failed(), 0);
+        assert_eq!(report.skipped(), 1);
+        assert!(fixture.exists("a"), "the file is back at its source");
+        assert!(blocked.is_dir(), "the destination is untouched");
+        let leftovers: Vec<_> = fs::read_dir(&fixture.dir)
+            .expect("read dir")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with(TEMP_PREFIX))
+            .collect();
+        assert!(leftovers.is_empty(), "no file is left under a generated name");
+    }
+
+    #[test]
+    fn a_journal_failure_puts_every_staged_peer_back() {
+        let fixture = fixture(&["ab", "ba"]);
+        let plan = fixture.plan(swap());
+        let mut journal = Journal::open(fixture.options.journal.clone()).expect("open");
+        let mut staged = Vec::new();
+        for (index, row) in plan.rows.iter().enumerate() {
+            let temp = stage(&row.src, 1, index, &mut journal).expect("stage").expect("free name");
+            staged.push((index, temp));
+        }
+
+        let stranded = restore_staged(&plan, &staged);
+
+        assert_eq!(stranded, 0);
+        assert!(fixture.exists("ab"));
+        assert!(fixture.exists("ba"));
+        let leftovers: Vec<_> = fs::read_dir(&fixture.dir)
+            .expect("read dir")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with(TEMP_PREFIX))
+            .collect();
+        assert!(leftovers.is_empty(), "no file is left under a generated name");
     }
 
     #[test]

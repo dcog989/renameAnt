@@ -92,6 +92,8 @@ enum Overlay {
         listed: Vec<usize>,
         /// Rows the report does not list, counted when it arrived.
         rest: usize,
+        /// Renamed, failed and skipped, counted when it arrived.
+        counts: (usize, usize, usize),
     },
 }
 
@@ -141,7 +143,6 @@ pub struct App {
     logo: TextureHandle,
     /// The journal panel is shown unless the user collapses it.
     journal_open: bool,
-    overwrite: bool,
     status: String,
     overlay: Option<Overlay>,
 }
@@ -191,7 +192,6 @@ impl App {
             history: history::History::default(),
             logo: logo::texture(&cc.egui_ctx),
             journal_open: true,
-            overwrite: false,
             status,
             overlay: None,
         };
@@ -356,7 +356,6 @@ impl App {
     fn start_apply(&mut self) {
         let options = ApplyOptions {
             journal: self.journal.clone(),
-            overwrite: self.overwrite,
             batched_sync: self.fast,
         };
         self.status = "applying…".to_owned();
@@ -488,16 +487,16 @@ impl App {
                                 None => format!("Applied run {run}"),
                             };
                             let (renamed, failed) = (report.renamed(), report.failed());
+                            let counts = (renamed, failed, report.skipped());
                             self.status = format!("run {run}: {renamed} renamed, {failed} failed");
                             self.follow_renames(&report);
                             let listed = dialogs::listed_indices(&report);
                             let rest = dialogs::unlisted_rows(&report);
-                            self.overlay = Some(Overlay::Report { title, report, listed, rest });
+                            self.overlay =
+                                Some(Overlay::Report { title, report, listed, rest, counts });
                         }
                         Err(error) => {
-                            self.status = format!(
-                                "the journal could not be written, so the run stopped: {error}"
-                            );
+                            self.status = format!("the run stopped: {error}");
                         }
                     }
                     // The names on disk have changed, so the preview is stale.
@@ -689,13 +688,6 @@ impl App {
                     totals: self.model.totals,
                 });
             }
-            style::pointer(ui.checkbox(&mut self.overwrite, "Overwrite existing files"));
-            if self.overwrite {
-                ui.colored_label(
-                    danger(ui),
-                    "irrecoverable: undo cannot restore what this clobbers",
-                );
-            }
         });
         if !self.status.is_empty() {
             ui.label(self.status.as_str());
@@ -768,7 +760,7 @@ impl App {
             ui.set_min_width(OVERLAY_WIDTH);
             let choice = match &overlay {
                 Overlay::ConfirmApply { skipped, totals } => {
-                    dialogs::confirm_apply(ui, skipped, *totals, self.overwrite, self.fast)
+                    dialogs::confirm_apply(ui, skipped, *totals, self.fast)
                 }
                 Overlay::ConfirmUndo(session) => dialogs::confirm_undo(ui, session),
                 Overlay::ConfirmUndoRow { run, from, to } => {
@@ -776,8 +768,8 @@ impl App {
                 }
                 Overlay::ConfirmRemove(session) => dialogs::confirm_remove(ui, session),
                 Overlay::ConfirmClear => dialogs::confirm_clear(ui, self.sessions.len()),
-                Overlay::Report { title, report, listed, rest } => {
-                    dialogs::show_report(ui, title, report, listed, *rest)
+                Overlay::Report { title, report, listed, rest, counts } => {
+                    dialogs::show_report(ui, title, report, *counts, listed, *rest)
                 }
             };
             match choice {

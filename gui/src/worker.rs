@@ -172,7 +172,7 @@ fn ran(undo_of: Option<RunId>, result: io::Result<ApplyReport>, options: &ApplyO
         run: report.run,
         at: report.at,
         renames: report.records,
-        overwrite: undo_of.is_none() && options.overwrite,
+        overwrite: false,
         undo_of,
         interrupted: false,
     });
