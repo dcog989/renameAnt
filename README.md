@@ -1,40 +1,28 @@
 # renameAnt
 
-Bulk renamer for files and directories on Linux. An ordered rule pipeline produces a before/after preview. Nothing is written until you apply, existing targets are never overwritten, and every run is undoable from an append-only journal.
+Linux file / directory bulk renamer GUI. Provides fast and safe renaming with multiple rules, preview and undo.
+
+<!-- screenshots -->
+
+## Features
+
+- **Rules**: replace (literal or regex), case, insert/remove/trim, numbering, normalize; each targets the stem, extension or whole name.
+- **Preview**: before/after per row; conflicts, taken names and invalid names are reported before anything is written.
+- **Safety**: dry run until confirmed, no overwrite unless opted in, cycles and case-only renames staged through a temp name.
+- **Undo**: append-only journal; reverse any run, partial ones included.
+- **Files**: folders or single files, optional subdirectories, kind and name filters, column sort, non-UTF-8 names kept as bytes.
+- **Speed**: fast mode defers size and modified reads and batches journal syncs.
 
 ## Install
 
-[Download the AppImage](https://github.com/Bubba/renameAnt/releases/latest/), then:
+[Download the latest release](https://github.com/Bubba/renameAnt/releases/latest):
 
-1. Put it on your PATH:
+| Platform | Format   | Install                                                   |
+| -------- | -------- | --------------------------------------------------------- |
+| Linux    | AppImage | `chmod +x renameAnt-*.AppImage && ./renameAnt-*.AppImage` |
 
-```sh
-chmod +x renameAnt-*.AppImage
-mkdir -p ~/.local/bin
-mv renameAnt-*.AppImage ~/.local/bin/renameant.AppImage
-```
-
-2. Add its icon and menu entry:
-
-```sh
-APP=~/.local/bin/renameant.AppImage
-mkdir -p ~/.local/share/icons ~/.local/share/applications
-"$APP" --appimage-extract usr/share/icons/hicolor/512x512/apps/renameant.png
-mv squashfs-root/usr/share/icons/hicolor/512x512/apps/renameant.png ~/.local/share/icons/
-rm -rf squashfs-root
-cat > ~/.local/share/applications/renameant.desktop <<EOF
-[Desktop Entry]
-Type=Application
-Name=renameAnt
-Comment=Bulk file renamer
-Exec=$HOME/.local/bin/renameant.AppImage
-Icon=$HOME/.local/share/icons/renameant.png
-Categories=Utility;FileTools;
-Terminal=false
-EOF
-```
-
-The window opens when you run `renameant.AppImage` or pick renameAnt from the launcher.
+> [!NOTE]
+> The AppImage adds itself to the application menu, installs its icon, and repoints the entry when you move or rename it.
 
 ## GUI
 
@@ -53,10 +41,11 @@ The window opens when you run `renameant.AppImage` or pick renameAnt from the la
 Requires Rust 1.99+ and `rsvg-convert`.
 
 ```sh
-just run                               # GUI from source
-just check                             # clippy, formatting check, tests
-just build                             # target/release/renameant-gui
-just package                           # prints dist/out/renameAnt-<version>-x86_64.AppImage
+just check          # clippy, formatting check, tests
+just build          # target/release/renameant-gui
+just package        # prints dist/out/renameAnt-<version>-x86_64.AppImage
+just run            # Debug build and run of the GUI.
+just update         # Refresh dependencies to the latest allowed versions.
 ```
 
 ## License

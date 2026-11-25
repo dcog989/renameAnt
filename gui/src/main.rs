@@ -3,6 +3,7 @@
 
 mod app;
 mod config;
+mod desktop_integration;
 mod dialogs;
 mod edit;
 mod editor;
@@ -20,6 +21,7 @@ use egui::ViewportBuilder;
 const WINDOW_SIZE: [f32; 2] = [1200.0, 720.0];
 
 fn main() -> eframe::Result {
+    desktop_integration::install();
     let options = eframe::NativeOptions {
         viewport: ViewportBuilder::default()
             .with_app_id("renameant")
