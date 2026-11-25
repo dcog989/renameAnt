@@ -100,40 +100,48 @@ fn card(
     // make the card fill it.
     ui.set_min_width(ui.available_width());
     let color = if edit.enabled { crate::style::ACCENT_BRIGHT } else { OFF };
+    // The parts are one toggle, so they read hover from the block's last rect
+    // rather than each from its own, and all change on the same frame.
+    let block_id = ui.scope_id().with(("toggle block", index));
+    let hot = ui
+        .data(|data| data.get_temp::<egui::Rect>(block_id))
+        .is_some_and(|rect| ui.rect_contains_pointer(rect));
     ui.horizontal(|ui| {
+        let toggle_text = if edit.enabled { "turn this rule off" } else { "turn this rule on" };
+        let hot_color = if hot { crate::style::ACCENT_LIGHT } else { color };
         let toggle = ui
             .add(
-                egui::Button::new(RichText::new(icon(edit.kind)).size(ICON_SIZE).color(color))
+                egui::Button::new(RichText::new(icon(edit.kind)).size(ICON_SIZE).color(hot_color))
                     .frame(false),
             )
-            .on_hover_text("turn this rule on or off")
             .accessible_name(name(index, "on or off"));
         if toggle.clicked() {
             edit.enabled = !edit.enabled;
         }
-        let title = ui
-            .add(
-                egui::Label::new(RichText::new(edit.kind.label()).color(color).size(16.0))
-                    .wrap_mode(egui::TextWrapMode::Extend)
-                    .sense(egui::Sense::click()),
-            )
-            .on_hover_text("turn this rule on or off");
-        let name_hovered = title.hovered();
-        if crate::style::pointer(title).clicked() {
+        let title = crate::style::pointer(ui.add(
+            egui::Label::new(RichText::new(edit.kind.label()).color(hot_color).size(16.0))
+                .wrap_mode(egui::TextWrapMode::Extend)
+                .sense(egui::Sense::click()),
+        ));
+        if title.clicked() {
             edit.enabled = !edit.enabled;
         }
-        // The name is a hit target for the same toggle, so hovering it lights the
-        // checkbox the way hovering the checkbox itself does.
         let idle = ui.style().visuals.widgets.inactive;
-        if name_hovered {
+        if hot {
             let hovered = ui.style().visuals.widgets.hovered;
             ui.style_mut().visuals.widgets.inactive = hovered;
         }
-        crate::style::pointer(ui.add(egui::Checkbox::without_text(&mut edit.enabled)))
-            .accessible_name(name(index, "enabled"));
-        if name_hovered {
+        let checkbox = crate::style::pointer(ui.add(egui::Checkbox::without_text(
+            &mut edit.enabled,
+        )))
+        .accessible_name(name(index, "enabled"));
+        if hot {
             ui.style_mut().visuals.widgets.inactive = idle;
         }
+        // One hover target and one tooltip: the parts are all the same toggle.
+        let block = toggle.union(title).union(checkbox);
+        ui.data_mut(|data| data.insert_temp(block_id, block.rect));
+        block.on_hover_text(toggle_text);
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if !edit.builtin
