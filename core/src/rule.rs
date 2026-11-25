@@ -4,7 +4,7 @@
 //! Adding a feature means adding a variant here, not a code path in `plan` or
 //! `apply`.
 
-use std::io::Write;
+use std::fmt::Write;
 
 use bstr::ByteSlice;
 use jiff::ZonedDateTime;
@@ -288,6 +288,22 @@ impl CompiledRuleSet {
     }
 }
 
+/// Appends the generated `token` and the selection in the order `place` asks
+/// for, or the token alone when it replaces the selection.
+fn push_placed(out: &mut Vec<u8>, sel: &[u8], token: &[u8], place: SequencePlace) {
+    match place {
+        SequencePlace::Prefix => {
+            out.extend_from_slice(token);
+            out.extend_from_slice(sel);
+        }
+        SequencePlace::Suffix => {
+            out.extend_from_slice(sel);
+            out.extend_from_slice(token);
+        }
+        SequencePlace::Replace => out.extend_from_slice(token),
+    }
+}
+
 /// The stamp `format` writes for `now`, read in the datetime's own time zone.
 fn date_stamp(format: DateFormat, now: &ZonedDateTime) -> String {
     let (year, month, day) = (now.year(), now.month(), now.day());
@@ -486,33 +502,13 @@ impl CompiledRule {
             },
             CompiledRule::Sequence { start, step, pad, place, .. } => {
                 let number = start.saturating_add(step.saturating_mul(rank as u64));
-                match place {
-                    SequencePlace::Prefix => {
-                        let _ = write!(out, "{number:0width$}", width = *pad);
-                        out.extend_from_slice(sel);
-                    }
-                    SequencePlace::Suffix => {
-                        out.extend_from_slice(sel);
-                        let _ = write!(out, "{number:0width$}", width = *pad);
-                    }
-                    SequencePlace::Replace => {
-                        let _ = write!(out, "{number:0width$}", width = *pad);
-                    }
-                }
+                expansion.clear();
+                let _ = write!(expansion, "{number:0width$}", width = *pad);
+                push_placed(out, sel, expansion.as_bytes(), *place);
                 true
             }
             CompiledRule::Date { stamp, place, .. } => {
-                match place {
-                    SequencePlace::Prefix => {
-                        out.extend_from_slice(stamp.as_bytes());
-                        out.extend_from_slice(sel);
-                    }
-                    SequencePlace::Suffix => {
-                        out.extend_from_slice(sel);
-                        out.extend_from_slice(stamp.as_bytes());
-                    }
-                    SequencePlace::Replace => out.extend_from_slice(stamp.as_bytes()),
-                }
+                push_placed(out, sel, stamp.as_bytes(), *place);
                 true
             }
             CompiledRule::Normalize { ops, .. } => {

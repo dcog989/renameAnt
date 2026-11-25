@@ -77,9 +77,9 @@ impl RuleKind {
     }
 }
 
-/// What a number rule does with the number.
+/// What a rule that generates text, such as a number or a date, does with it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NumberPlace {
+pub enum Place {
     Prefix,
     Suffix,
     Whole,
@@ -87,40 +87,39 @@ pub enum NumberPlace {
     Extension,
 }
 
-impl NumberPlace {
-    pub const ALL: [NumberPlace; 5] = [
-        NumberPlace::Prefix,
-        NumberPlace::Suffix,
-        NumberPlace::Whole,
-        NumberPlace::Stem,
-        NumberPlace::Extension,
-    ];
+impl Place {
+    pub const ALL: [Place; 5] =
+        [Place::Prefix, Place::Suffix, Place::Whole, Place::Stem, Place::Extension];
 
     pub fn label(self) -> &'static str {
         match self {
-            NumberPlace::Prefix => "as prefix",
-            NumberPlace::Suffix => "as suffix",
-            NumberPlace::Whole => "replace whole name",
-            NumberPlace::Stem => "replace stem",
-            NumberPlace::Extension => "replace extension",
+            Place::Prefix => "as prefix",
+            Place::Suffix => "as suffix",
+            Place::Whole => "replace whole name",
+            Place::Stem => "replace stem",
+            Place::Extension => "replace extension",
         }
     }
-}
 
-/// Where a date rule puts its stamp.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DatePlace {
-    Prefix,
-    Suffix,
-}
-
-impl DatePlace {
-    pub const ALL: [DatePlace; 2] = [DatePlace::Prefix, DatePlace::Suffix];
-
-    pub fn label(self) -> &'static str {
+    /// The core placement and target this stands for.
+    fn to_core(self) -> (SequencePlace, Target) {
         match self {
-            DatePlace::Prefix => "as prefix",
-            DatePlace::Suffix => "as suffix",
+            Place::Prefix => (SequencePlace::Prefix, Target::Whole),
+            Place::Suffix => (SequencePlace::Suffix, Target::Stem),
+            Place::Whole => (SequencePlace::Replace, Target::Whole),
+            Place::Stem => (SequencePlace::Replace, Target::Stem),
+            Place::Extension => (SequencePlace::Replace, Target::Ext),
+        }
+    }
+
+    /// The reverse of [`Place::to_core`], for a rule loaded from disk.
+    fn from_core(place: SequencePlace, target: Target) -> Place {
+        match (place, target) {
+            (SequencePlace::Prefix, _) => Place::Prefix,
+            (SequencePlace::Suffix, _) => Place::Suffix,
+            (SequencePlace::Replace, Target::Whole) => Place::Whole,
+            (SequencePlace::Replace, Target::Ext) => Place::Extension,
+            (SequencePlace::Replace, Target::Stem) => Place::Stem,
         }
     }
 }
@@ -175,8 +174,7 @@ pub struct RuleEdit {
     pub start: u64,
     pub step: u64,
     pub pad: u64,
-    pub number_place: NumberPlace,
-    pub date_place: DatePlace,
+    pub place: Place,
     pub date_format: DateFormat,
     pub normalize: [bool; NORMALIZE_OPS.len()],
 }
@@ -201,8 +199,7 @@ impl Default for RuleEdit {
             start: 1,
             step: 1,
             pad: 3,
-            number_place: NumberPlace::Stem,
-            date_place: DatePlace::Prefix,
+            place: Place::Stem,
             date_format: DateFormat::Yyyymmdd,
             normalize: [false; NORMALIZE_OPS.len()],
         }
@@ -263,13 +260,7 @@ impl RuleEdit {
                 target: self.target,
             },
             RuleKind::Number => {
-                let (place, target) = match self.number_place {
-                    NumberPlace::Prefix => (SequencePlace::Prefix, Target::Whole),
-                    NumberPlace::Suffix => (SequencePlace::Suffix, Target::Stem),
-                    NumberPlace::Whole => (SequencePlace::Replace, Target::Whole),
-                    NumberPlace::Stem => (SequencePlace::Replace, Target::Stem),
-                    NumberPlace::Extension => (SequencePlace::Replace, Target::Ext),
-                };
+                let (place, target) = self.place.to_core();
                 Rule::Sequence {
                     start: self.start,
                     step: self.step,
@@ -278,14 +269,10 @@ impl RuleEdit {
                     target,
                 }
             }
-            RuleKind::Date => Rule::Date {
-                format: self.date_format,
-                place: match self.date_place {
-                    DatePlace::Prefix => SequencePlace::Prefix,
-                    DatePlace::Suffix => SequencePlace::Suffix,
-                },
-                target: self.target,
-            },
+            RuleKind::Date => {
+                let (place, target) = self.place.to_core();
+                Rule::Date { format: self.date_format, place, target }
+            }
             RuleKind::Case => Rule::Case { style: self.case, target: self.target },
             RuleKind::Normalize => Rule::Normalize {
                 ops: NORMALIZE_OPS
@@ -360,13 +347,7 @@ impl RuleEdit {
             }
             Rule::Sequence { start, step, pad, place, target } => {
                 edit.kind = RuleKind::Number;
-                edit.number_place = match (*place, *target) {
-                    (SequencePlace::Prefix, _) => NumberPlace::Prefix,
-                    (SequencePlace::Suffix, _) => NumberPlace::Suffix,
-                    (SequencePlace::Replace, Target::Whole) => NumberPlace::Whole,
-                    (SequencePlace::Replace, Target::Ext) => NumberPlace::Extension,
-                    (SequencePlace::Replace, Target::Stem) => NumberPlace::Stem,
-                };
+                edit.place = Place::from_core(*place, *target);
                 edit.start = *start;
                 edit.step = *step;
                 edit.pad = *pad as u64;
@@ -374,11 +355,7 @@ impl RuleEdit {
             Rule::Date { format, place, target } => {
                 edit.kind = RuleKind::Date;
                 edit.date_format = *format;
-                edit.date_place = match place {
-                    SequencePlace::Prefix => DatePlace::Prefix,
-                    SequencePlace::Suffix | SequencePlace::Replace => DatePlace::Suffix,
-                };
-                edit.target = *target;
+                edit.place = Place::from_core(*place, *target);
             }
             Rule::Normalize { ops, target } => {
                 edit.kind = RuleKind::Normalize;
@@ -491,7 +468,7 @@ mod tests {
         });
         round_trips(RuleEdit {
             kind: RuleKind::Number,
-            number_place: NumberPlace::Suffix,
+            place: Place::Suffix,
             start: 5,
             step: 2,
             pad: 4,
@@ -499,19 +476,23 @@ mod tests {
         });
         round_trips(RuleEdit {
             kind: RuleKind::Number,
-            number_place: NumberPlace::Prefix,
+            place: Place::Prefix,
             ..RuleEdit::default()
         });
         round_trips(RuleEdit {
             kind: RuleKind::Number,
-            number_place: NumberPlace::Extension,
+            place: Place::Extension,
             ..RuleEdit::default()
         });
         round_trips(RuleEdit {
             kind: RuleKind::Date,
-            date_place: DatePlace::Suffix,
+            place: Place::Whole,
             date_format: DateFormat::YyyymmddHhmmss,
-            target: Target::Stem,
+            ..RuleEdit::default()
+        });
+        round_trips(RuleEdit {
+            kind: RuleKind::Date,
+            place: Place::Suffix,
             ..RuleEdit::default()
         });
         round_trips(RuleEdit {

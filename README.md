@@ -6,12 +6,23 @@ Linux file / directory bulk renamer GUI. Provides fast and safe renaming with mu
 
 ## Features
 
-- **Rules**: replace (literal or regex), case, insert/remove/trim, numbering, normalize; each targets the stem, extension or whole name.
+- **Rules**: default and custom rules
 - **Preview**: before/after per row; conflicts, taken names and invalid names are reported before anything is written.
 - **Safety**: dry run until confirmed, no overwrite unless opted in, cycles and case-only renames staged through a temp name.
 - **Undo**: append-only journal; reverse any run, partial ones included.
 - **Files**: folders or single files, optional subdirectories, kind and name filters, column sort, non-UTF-8 names kept as bytes.
 - **Speed**: fast mode defers size and modified reads and batches journal syncs.
+
+### Default Rules
+
+- replace (regex toggle)
+- remove (n chars from position x to y)
+- trim (n chars from the end)
+- insert (prefix, suffix, position)
+- number (prefix, suffix, length)
+- date (prefix, suffix, format (yyyymmdd, ddmmyyyy, mmddyyyy, yyyymmdd-hhmmss))
+- change case (upper, lower, title, kebab, camel, pascal, snake, etc.)
+- normalize
 
 ## Install
 

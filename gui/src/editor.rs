@@ -8,8 +8,8 @@ use egui::{Color32, DragValue, Frame, RichText, Stroke, Ui};
 use renameant_core::rule::Target;
 
 use crate::edit::{
-    CASE_STYLES, DATE_FORMATS, DatePlace, InsertKind, NORMALIZE_OPS, NumberPlace, RuleEdit,
-    RuleKind, case_label, date_format_label, default_rules, target_label,
+    CASE_STYLES, DATE_FORMATS, InsertKind, NORMALIZE_OPS, Place, RuleEdit, RuleKind, case_label,
+    date_format_label, default_rules, target_label,
 };
 
 /// The add-rule row drawn under the list; the list leaves it this much room.
@@ -201,7 +201,7 @@ fn fields(ui: &mut Ui, index: usize, edit: &mut RuleEdit) {
         ui.visuals_mut().override_text_color = Some(OFF);
     }
     ui.horizontal_wrapped(|ui| {
-        if edit.kind != RuleKind::Number {
+        if !matches!(edit.kind, RuleKind::Number | RuleKind::Date) {
             target_combo(ui, index, edit);
         }
         match edit.kind {
@@ -248,17 +248,7 @@ fn fields(ui: &mut Ui, index: usize, edit: &mut RuleEdit) {
                 }
             }
             RuleKind::Number => {
-                crate::style::pointer(
-                    egui::ComboBox::from_id_salt(("number place", index))
-                        .selected_text(edit.number_place.label())
-                        .show_ui(ui, |ui| {
-                            for place in NumberPlace::ALL {
-                                ui.selectable_value(&mut edit.number_place, place, place.label());
-                            }
-                        })
-                        .response,
-                )
-                .accessible_name(name(index, "where"));
+                place_combo(ui, index, edit);
                 label(ui, "start");
                 ui.add(DragValue::new(&mut edit.start)).accessible_name(name(index, "start"));
                 label(ui, "step");
@@ -269,17 +259,7 @@ fn fields(ui: &mut Ui, index: usize, edit: &mut RuleEdit) {
                     .accessible_name(name(index, "digits"));
             }
             RuleKind::Date => {
-                crate::style::pointer(
-                    egui::ComboBox::from_id_salt(("date place", index))
-                        .selected_text(edit.date_place.label())
-                        .show_ui(ui, |ui| {
-                            for place in DatePlace::ALL {
-                                ui.selectable_value(&mut edit.date_place, place, place.label());
-                            }
-                        })
-                        .response,
-                )
-                .accessible_name(name(index, "where"));
+                place_combo(ui, index, edit);
                 crate::style::pointer(
                     egui::ComboBox::from_id_salt(("date format", index))
                         .selected_text(date_format_label(edit.date_format))
@@ -317,6 +297,21 @@ fn fields(ui: &mut Ui, index: usize, edit: &mut RuleEdit) {
         }
     });
     hint(ui, edit);
+}
+
+/// The where-combo shared by every rule that generates text.
+fn place_combo(ui: &mut Ui, index: usize, edit: &mut RuleEdit) {
+    crate::style::pointer(
+        egui::ComboBox::from_id_salt(("place", index))
+            .selected_text(edit.place.label())
+            .show_ui(ui, |ui| {
+                for place in Place::ALL {
+                    ui.selectable_value(&mut edit.place, place, place.label());
+                }
+            })
+            .response,
+    )
+    .accessible_name(name(index, "where"));
 }
 
 fn target_combo(ui: &mut Ui, index: usize, edit: &mut RuleEdit) {
