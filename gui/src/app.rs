@@ -65,8 +65,7 @@ pub struct App {
     /// The folders and files to rename, in the order they were picked. Every
     /// scan is over this list, so one folder is just the one-pick case.
     added: Vec<PathBuf>,
-    /// The directory typed into the field, committed by `Add!` or filled by a
-    /// browse.
+    /// The directory typed into the field and committed with Enter.
     dir_field: String,
     /// Scan and rename the whole tree below every picked folder, not just its
     /// immediate children.
@@ -244,7 +243,7 @@ impl App {
         }
     }
 
-    /// A folder goes into the field, waiting for `Add!`. The dialog is the
+    /// A folder joins the picked list at once, like a file. The dialog is the
     /// worker's own thread, so a slow portal never stalls a frame.
     fn pick_folder(&mut self) {
         self.browse(Browse::Folder);
@@ -329,6 +328,7 @@ impl App {
                     match picked {
                         Picked::Folder(Some(folder)) => {
                             self.dir_field = folder.display().to_string();
+                            self.add(vec![folder]);
                         }
                         Picked::Folder(None) => {}
                         Picked::Files(paths) => self.add(paths),
@@ -387,7 +387,15 @@ impl App {
                         }
                     });
                 });
-                style::field(ui, &mut self.dir_field, DIR_FIELD_WIDTH).accessible_name("Directory");
+                let typed = style::field(ui, &mut self.dir_field, DIR_FIELD_WIDTH)
+                    .accessible_name("Directory");
+                // Enter commits the typed path now that there is no Add! button.
+                if typed.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
+                    let dir = PathBuf::from(self.dir_field.trim());
+                    if !dir.as_os_str().is_empty() {
+                        self.add(vec![dir]);
+                    }
+                }
                 if style::pointer(
                     ui.add_enabled(
                         !self.busy,
@@ -407,11 +415,6 @@ impl App {
                          once per batch instead of once per rename",
                     ),
                 );
-                let can_add = !self.dir_field.trim().is_empty();
-                if ui.add_enabled(can_add, egui::Button::new("Add!")).clicked() {
-                    let dir = PathBuf::from(self.dir_field.trim());
-                    self.add(vec![dir]);
-                }
                 if self.busy && !self.browsing {
                     ui.spinner();
                 }
