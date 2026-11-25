@@ -62,7 +62,9 @@ pub fn show(ui: &mut egui::Ui, model: &mut PlanModel) -> Change {
     ui.style_mut().interaction.selectable_labels = false;
     // Every column keeps its width, so a narrow centre panel would clip the tail
     // of them; the horizontal scroll keeps them all reachable instead.
-    egui::ScrollArea::horizontal().auto_shrink([true, false]).show(ui, |ui| {
+    let row_gap = ui.spacing().item_spacing.y;
+    let mut header_bottom = None;
+    let area = egui::ScrollArea::horizontal().auto_shrink([true, false]).show(ui, |ui| {
         // egui_extras draws a column's separator only when the column can be
         // dragged, so the fixed columns' separators are painted here instead.
         let mut fixed_edges: Vec<f32> = Vec::new();
@@ -81,6 +83,7 @@ pub fn show(ui: &mut egui::Ui, model: &mut PlanModel) -> Change {
             .column(Column::exact(REMOVE_WIDTH).resizable(false))
             .header(HEADER_HEIGHT, |mut header| {
                 header.col(|ui| {
+                    header_bottom = Some(ui.max_rect().bottom());
                     fixed_edges.push(fixed_column_edge(ui));
                     sort_cell(ui, model, SortKey::Status, "Status", HeaderAlign::Left);
                 });
@@ -225,6 +228,20 @@ pub fn show(ui: &mut egui::Ui, model: &mut PlanModel) -> Change {
             ui.painter().vline(x, y, stroke);
         }
     });
+    // The frame and the line under the titles are painted outside the scroll
+    // area so they stay at the table's edges when the columns scroll. The rule
+    // sits in the middle of the header gap, where the first row's tint starts:
+    // the titles then take a whole row slot, like every other row.
+    if let Some(header_bottom) = header_bottom {
+        let top = header_bottom + row_gap / 2.0;
+        let rect = egui::Rect::from_min_max(
+            egui::pos2(area.inner_rect.left(), top),
+            area.inner_rect.right_bottom(),
+        );
+        let stroke = ui.visuals().widgets.noninteractive.bg_stroke;
+        ui.painter().rect_stroke(rect, egui::CornerRadius::ZERO, stroke, egui::StrokeKind::Inside);
+        ui.painter().hline(rect.x_range(), top, stroke);
+    }
     Change { removed }
 }
 
