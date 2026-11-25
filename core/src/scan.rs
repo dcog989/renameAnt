@@ -135,8 +135,7 @@ pub fn scan_paths(paths: &[PathBuf], recursive: bool) -> io::Result<Scan> {
 
     for dir in &dirs {
         // A recursive walk of the parent already covers a nested pick.
-        if recursive
-            && dirs.iter().any(|parent| parent != dir && dir.starts_with(parent.as_path()))
+        if recursive && dirs.iter().any(|parent| parent != dir && dir.starts_with(parent.as_path()))
         {
             continue;
         }
@@ -167,8 +166,7 @@ pub fn scan_paths(paths: &[PathBuf], recursive: bool) -> io::Result<Scan> {
         }
     }
 
-    let mut seen: HashSet<PathBuf> =
-        scan.entries.iter().map(|entry| entry.path.clone()).collect();
+    let mut seen: HashSet<PathBuf> = scan.entries.iter().map(|entry| entry.path.clone()).collect();
     for (path, kind) in picked {
         let name = path.file_name().unwrap_or(path.as_os_str()).to_os_string();
         if seen.insert(path.clone()) {
@@ -207,13 +205,7 @@ fn scan_at(dir: &Path, recurse: bool) -> io::Result<(Vec<Entry>, DirIndex)> {
 /// pathologically deep tree, or a bind mount of an ancestor inside the tree,
 /// walks until the kernel rejects the path length; add an explicit worklist and
 /// a device/inode cycle check if that stops being hypothetical.
-fn walk(
-    dir: &Path,
-    recurse: bool,
-    scan: &mut Scan,
-    limit: usize,
-    rows: bool,
-) -> io::Result<()> {
+fn walk(dir: &Path, recurse: bool, scan: &mut Scan, limit: usize, rows: bool) -> io::Result<()> {
     let mut names = BTreeSet::new();
     let mut subdirs: Vec<PathBuf> = Vec::new();
     let mut failed = None;
@@ -324,8 +316,7 @@ mod tests {
         fs::write(root.join("top.txt"), b"x").unwrap();
         fs::write(nested.join("mid.txt"), b"x").unwrap();
 
-        let scan =
-            scan_paths(&[root.to_path_buf(), nested.join("mid.txt")], true).expect("scan");
+        let scan = scan_paths(&[root.to_path_buf(), nested.join("mid.txt")], true).expect("scan");
 
         let mut names: Vec<String> =
             scan.entries.iter().map(|entry| entry.name.to_string_lossy().into_owned()).collect();
@@ -379,7 +370,7 @@ mod tests {
         let link = temp.path().join("link");
         std::os::unix::fs::symlink(&real, &link).unwrap();
 
-        let scan = scan_paths(&[link.clone()], true).expect("scan");
+        let scan = scan_paths(std::slice::from_ref(&link), true).expect("scan");
 
         assert_eq!(scan.entries.len(), 1);
         assert_eq!(scan.entries[0].name, OsString::from("photo.jpg"));
@@ -393,7 +384,7 @@ mod tests {
         let broken = temp.path().join("broken");
         std::os::unix::fs::symlink(temp.path().join("missing"), &broken).unwrap();
 
-        let scan = scan_paths(&[broken.clone()], false).expect("scan");
+        let scan = scan_paths(std::slice::from_ref(&broken), false).expect("scan");
 
         assert_eq!(scan.entries.len(), 1);
         assert_eq!(scan.entries[0].path, broken);
@@ -420,7 +411,7 @@ mod tests {
         let scan = scan_paths(&[temp.path().to_path_buf()], true).expect("scan");
         // A picked root that cannot be read is reported, not fatal, so other
         // picks still scan.
-        let root_scan = scan_paths(&[locked.clone()], true).expect("scan");
+        let root_scan = scan_paths(std::slice::from_ref(&locked), true).expect("scan");
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
 
         assert_eq!(scan.unreadable, vec![locked.clone()]);
