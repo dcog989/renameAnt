@@ -867,7 +867,7 @@ mod tests {
     fn a_partial_line_is_dropped_before_the_next_append() {
         let (_temp, path) = temp_journal();
         std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
-        let mut begin = serde_json::to_string(&JournalRecord::Begin {
+        let mut begin_line = serde_json::to_string(&JournalRecord::Begin {
             run: 1,
             at: 0,
             planned: 1,
@@ -875,8 +875,8 @@ mod tests {
             undo_of: None,
         })
         .expect("json");
-        begin.push('\n');
-        let mut bytes = begin.into_bytes();
+        begin_line.push('\n');
+        let mut bytes = begin_line.into_bytes();
         bytes.extend_from_slice(b"{\"record\":\"rename\",\"run\":1,\"from\":\"a");
         std::fs::write(&path, bytes).expect("write");
 

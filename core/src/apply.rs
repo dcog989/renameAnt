@@ -326,7 +326,7 @@ fn reverse(
     let mut rows = Vec::with_capacity(completed.len());
     for record in &completed {
         let outcome = match record.id {
-            Some(id) if FileId::of(&record.to) != Some(id) => Ok(Err(ApplyError::FileChanged)),
+            Some(id) if FileId::of(&record.to) != Some(id) => Err(ApplyError::FileChanged),
             _ => rename(&record.to, &record.from, false, &mut journal, run)?,
         };
         rows.push(ApplyRow {
