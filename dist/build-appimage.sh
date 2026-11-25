@@ -57,7 +57,7 @@ VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT/Cargo.toml" | head -1)"
 export VERSION
 
 echo "== build"
-cargo build --release -p renameant-gui
+cargo build --release --locked -p renameant-gui
 
 echo "== stage AppDir"
 rm -rf "$APPDIR"

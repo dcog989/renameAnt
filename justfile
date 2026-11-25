@@ -22,14 +22,14 @@ test:
 
 # Release build of the workspace.
 build:
-    cargo build --release
+    cargo build --release --locked
 
 # Debug build and run of the GUI.
 run:
     cargo run -p renameant-gui
 
 # AppImage into dist/out.
-package: build
+package:
     bash ./dist/build-appimage.sh
 
 # Remove build artifacts.
