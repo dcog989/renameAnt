@@ -380,7 +380,7 @@ mod tests {
             kind: renameant_core::scan::Kind::File,
         };
         let mut index = DirIndex::default();
-        index.existing.insert(PathBuf::from("/d"), std::collections::BTreeSet::new());
+        index.insert(PathBuf::from("/d"), std::collections::BTreeSet::new());
         let mut model = PlanModel::default();
         model.set_scan(vec![entry("a")], index.clone());
         model.removed.insert(PathBuf::from("/d/a"));
@@ -402,7 +402,7 @@ mod tests {
         let mut index = DirIndex::default();
         let names: std::collections::BTreeSet<std::ffi::OsString> =
             ["a", "ab"].iter().map(|name| std::ffi::OsString::from(*name)).collect();
-        index.existing.insert(PathBuf::from("/d"), names);
+        index.insert(PathBuf::from("/d"), names);
         let mut model = PlanModel {
             entries: vec![entry("a"), entry("ab")],
             index: Some(index),
@@ -436,7 +436,7 @@ mod tests {
             kind: renameant_core::scan::Kind::File,
         };
         let mut index = DirIndex::default();
-        index.existing.insert(
+        index.insert(
             PathBuf::from("/d"),
             std::iter::once(std::ffi::OsString::from("a")).collect(),
         );

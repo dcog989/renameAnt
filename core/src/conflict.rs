@@ -10,7 +10,7 @@
 //! table.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -22,6 +22,11 @@ use crate::scan::DirIndex;
 /// Marks every `Ok` row that cannot be applied, then puts the survivors in
 /// apply order.
 pub(crate) fn resolve(rows: &mut [PlanRow], index: &DirIndex) {
+    // `resolve` can run again after a post-pass rejects a row, so a staging
+    // mark from the first pass must not survive a changed plan.
+    for row in rows.iter_mut() {
+        row.via_temp = false;
+    }
     // The checks borrow the names out of `rows`, so which rows survive is kept
     // beside them and written back in one pass at the end.
     let mut status: Vec<Status> = rows.iter().map(|row| row.status).collect();
@@ -216,10 +221,9 @@ fn mark_target_exists(
         let mut present = names.as_mut().and_then(Iterator::next);
         // The same names folded to lower case: a case-insensitive mount treats
         // them as one. A rename that only changes case is staged, so it is not
-        // a collision with its own source.
-        let folded: Option<BTreeSet<Vec<u8>>> = dirs.names(dir).map(|names| {
-            names.iter().map(|name| osname::case_fold(name.as_bytes())).collect()
-        });
+        // a collision with its own source. The folded set is built with the
+        // scan, not per plan.
+        let folded = dirs.folded_names(dir);
 
         for target in &targets.by_name[at..end] {
             while matches!(present, Some(name) if name.as_os_str() < target.name) {
@@ -244,7 +248,7 @@ fn mark_target_exists(
             );
             let folded_taken = !on_disk
                 && !case_only
-                && folded.as_ref().is_some_and(|names| {
+                && folded.is_some_and(|names| {
                     names.contains(&osname::case_fold(target.name.as_bytes()))
                 });
             if folded_taken {
@@ -374,40 +378,64 @@ fn order_within_depth(
     emitted: &mut [bool],
 ) -> Vec<usize> {
     // `dependency[row]` is the row that vacates `row`'s destination. It always
-    // shares this row's directory, so it can never leave this group.
-    let mut dependency: HashMap<usize, usize> = HashMap::new();
+    // shares this row's directory, so it can never leave this group. If one
+    // does, propagation missed a row; treating it as no dependency keeps the
+    // permutation instead of panicking.
+    let mut in_group = vec![false; rows.len()];
     for &at in group {
-        if let Some(blocker) = blocker[at]
-            && blocker != at
+        in_group[at] = true;
+    }
+    let mut dependency: HashMap<usize, usize> = HashMap::new();
+    let mut dependents: HashMap<usize, Vec<usize>> = HashMap::new();
+    for &at in group {
+        if let Some(blocked_by) = blocker[at]
+            && blocked_by != at
+            && in_group[blocked_by]
         {
-            dependency.insert(at, blocker);
+            dependency.insert(at, blocked_by);
+            dependents.entry(blocked_by).or_default().push(at);
         }
     }
 
     let mut order: Vec<usize> = Vec::with_capacity(group.len());
+    let mut ready: VecDeque<usize> = VecDeque::new();
+    let mut queued = vec![false; rows.len()];
+    for &at in group {
+        let ready_now = match dependency.get(&at) {
+            Some(blocked_by) => emitted[*blocked_by],
+            None => true,
+        };
+        if !emitted[at] && ready_now {
+            ready.push_back(at);
+            queued[at] = true;
+        }
+    }
 
-    loop {
-        loop {
-            let mut progressed = false;
-            for &at in group {
-                if emitted[at] {
-                    continue;
-                }
-                if matches!(dependency.get(&at), Some(blocker) if !emitted[*blocker]) {
-                    continue;
-                }
-                order.push(at);
-                emitted[at] = true;
-                progressed = true;
+    let mut remaining = group.iter().filter(|at| !emitted[**at]).count();
+    let mut cursor = 0usize;
+    while remaining > 0 {
+        while let Some(at) = ready.pop_front() {
+            queued[at] = false;
+            if emitted[at] {
+                continue;
             }
-            if !progressed {
-                break;
+            order.push(at);
+            emitted[at] = true;
+            remaining -= 1;
+            for &child in dependents.get(&at).into_iter().flatten() {
+                if !emitted[child] && !queued[child] {
+                    ready.push_back(child);
+                    queued[child] = true;
+                }
             }
         }
 
         // Every remaining row waits on another remaining row, so walking the
         // dependencies from any of them must revisit one: that is the cycle.
-        let Some(&start) = group.iter().find(|at| !emitted[**at]) else {
+        while cursor < group.len() && emitted[group[cursor]] {
+            cursor += 1;
+        }
+        let Some(&start) = group.get(cursor) else {
             break;
         };
         let mut seen: HashMap<usize, usize> = HashMap::new();
@@ -417,14 +445,43 @@ fn order_within_depth(
             if let Some(&looped_at) = seen.get(&current) {
                 for &member in &path[looped_at..] {
                     rows[member].via_temp = true;
-                    order.push(member);
-                    emitted[member] = true;
+                    queued[member] = false;
+                    if !emitted[member] {
+                        emitted[member] = true;
+                        order.push(member);
+                        remaining -= 1;
+                    }
+                    for &child in dependents.get(&member).into_iter().flatten() {
+                        if !emitted[child] && !queued[child] {
+                            ready.push_back(child);
+                            queued[child] = true;
+                        }
+                    }
                 }
                 break;
             }
             seen.insert(current, path.len());
             path.push(current);
-            current = dependency[&current];
+            let Some(&next) = dependency.get(&current) else {
+                // The proof above says this cannot happen; keep the
+                // permutation rather than panicking.
+                debug_assert!(false, "a row in a cycle has no blocker");
+                if !emitted[current] {
+                    rows[current].via_temp = true;
+                    queued[current] = false;
+                    emitted[current] = true;
+                    order.push(current);
+                    remaining -= 1;
+                }
+                for &child in dependents.get(&current).into_iter().flatten() {
+                    if !emitted[child] && !queued[child] {
+                        ready.push_back(child);
+                        queued[child] = true;
+                    }
+                }
+                break;
+            };
+            current = next;
         }
     }
     order
@@ -467,6 +524,7 @@ struct Directories<'a> {
     index: &'a DirIndex,
     ids: HashMap<PathBuf, u32>,
     snapshots: Vec<Option<&'a BTreeSet<OsString>>>,
+    folded: Vec<Option<&'a BTreeSet<Vec<u8>>>>,
     /// The directory looked up last. A scan hands the rows over a directory at a
     /// time, so this answers almost every row without hashing its path.
     last: Option<(PathBuf, u32)>,
@@ -474,7 +532,13 @@ struct Directories<'a> {
 
 impl<'a> Directories<'a> {
     fn new(index: &'a DirIndex) -> Self {
-        Directories { index, ids: HashMap::new(), snapshots: Vec::new(), last: None }
+        Directories {
+            index,
+            ids: HashMap::new(),
+            snapshots: Vec::new(),
+            folded: Vec::new(),
+            last: None,
+        }
     }
 
     /// This directory's id, interning it on first sight. Ids are handed out in
@@ -491,6 +555,7 @@ impl<'a> Directories<'a> {
                 let id = self.snapshots.len() as u32;
                 self.ids.insert(dir.to_path_buf(), id);
                 self.snapshots.push(self.index.names(dir));
+                self.folded.push(self.index.folded_names(dir));
                 id
             }
         };
@@ -500,6 +565,10 @@ impl<'a> Directories<'a> {
 
     fn names(&self, id: u32) -> Option<&BTreeSet<OsString>> {
         self.snapshots[id as usize]
+    }
+
+    fn folded_names(&self, id: u32) -> Option<&BTreeSet<Vec<u8>>> {
+        self.folded[id as usize]
     }
 }
 
@@ -834,5 +903,24 @@ mod tests {
         assert_eq!(status_of("b"), Status::Conflict(ConflictKind::TargetExists));
         assert_eq!(status_of("c"), Status::Conflict(ConflictKind::TargetExists));
         assert_eq!(status_of("ax"), Status::Unchanged);
+    }
+
+    #[test]
+    fn a_blocker_outside_the_group_does_not_panic() {
+        let row = |name: &str| PlanRow {
+            src: PathBuf::from("/r").join(name),
+            dst: PathBuf::from("/r").join(format!("{name}2")),
+            status: Status::Ok,
+            via_temp: false,
+        };
+        let mut rows = vec![row("a"), row("b")];
+        let mut emitted = vec![false; rows.len()];
+
+        // A proof bug would leave row 0 waiting on row 1, which is not in the
+        // group. The fallback must keep the permutation, not index out of bounds.
+        let order = order_within_depth(&mut rows, &[0], &[Some(1), None], &mut emitted);
+
+        assert_eq!(order, vec![0]);
+        assert!(emitted[0]);
     }
 }

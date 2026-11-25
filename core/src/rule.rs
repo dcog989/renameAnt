@@ -9,7 +9,6 @@ use std::fmt::Write;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
-use bstr::ByteSlice;
 use jiff::ZonedDateTime;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -193,6 +192,11 @@ pub enum RuleError {
     PadTooLarge { pad: usize, max: usize },
     #[error("number rule overflows u64 with {entries} entries; lower its start or step")]
     SequenceOverflow { entries: usize },
+    #[error(
+        "the planner needs absolute paths, so undo does not depend on the working directory: \
+         {path:?}"
+    )]
+    RelativePath { path: PathBuf },
 }
 
 /// A rule with its regex built once per plan call, never per item.
@@ -217,8 +221,9 @@ pub(crate) struct CompiledRuleSet {
 impl RuleSet {
     pub(crate) fn compile(&self) -> Result<CompiledRuleSet, RuleError> {
         // One clock read per compile keeps every Date rule in a preview on the
-        // same stamp.
-        let now = ZonedDateTime::now();
+        // same stamp. A pipeline without a Date rule must not read it at all.
+        let has_date = self.rules.iter().any(|rule| matches!(rule, Rule::Date { .. }));
+        let now = has_date.then(ZonedDateTime::now);
         let mut rules = Vec::with_capacity(self.rules.len());
         for rule in &self.rules {
             rules.push(match rule {
@@ -260,7 +265,10 @@ impl RuleSet {
                     }
                 }
                 Rule::Date { format, place, target } => CompiledRule::Date {
-                    stamp: date_stamp(*format, &now),
+                    stamp: date_stamp(
+                        *format,
+                        now.as_ref().expect("a Date rule was present when the clock was read"),
+                    ),
                     place: *place,
                     target: *target,
                 },
@@ -274,7 +282,7 @@ impl RuleSet {
 }
 
 impl CompiledRuleSet {
-    /// Whether any rule reads the entry's position in name order. Only
+    /// Whether any rule reads the entry's position in source path order. Only
     /// `Sequence` does, so a pipeline without one needs no order taken at all.
     pub(crate) fn needs_rank(&self) -> bool {
         self.rules.iter().any(|rule| matches!(rule, CompiledRule::Sequence { .. }))
@@ -302,7 +310,7 @@ impl CompiledRuleSet {
 
     /// Runs the pipeline over one name, in order.
     ///
-    /// `rank` is the entry's position in name order, which only `Sequence`
+    /// `rank` is the entry's position in source path order, which only `Sequence`
     /// uses. The three buffers are borrowed so that a pipeline costs no
     /// allocation beyond the name it produces.
     pub(crate) fn apply(
@@ -452,12 +460,10 @@ impl CompiledRule {
                 true
             }
             CompiledRule::Literal { find, replace, .. } => {
-                if find.is_empty() {
-                    out.extend_from_slice(sel);
-                    return true;
-                }
                 let mut rest = sel;
-                while let Some(at) = rest.find(find.as_slice()) {
+                while let Some(at) =
+                    rest.windows(find.len()).position(|window| window == find.as_slice())
+                {
                     out.extend_from_slice(&rest[..at]);
                     out.extend_from_slice(replace);
                     rest = &rest[at + find.len()..];

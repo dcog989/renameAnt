@@ -1,6 +1,7 @@
 //! The pure planner.
 
 use std::borrow::Borrow;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -8,7 +9,7 @@ use std::path::{Path, PathBuf};
 use crate::conflict;
 use crate::osname;
 use crate::rule::{RuleError, RuleSet};
-use crate::scan::{DirIndex, Entry};
+use crate::scan::{DirIndex, Entry, Kind};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
@@ -77,8 +78,8 @@ impl Plan {
     }
 }
 
-/// Builds a plan from a scan and a rule set. Pure: no syscalls, and every
-/// existence question is answered from `index`.
+/// Builds a plan from a scan and a rule set. Pure: no filesystem syscalls, and
+/// every existence question is answered from `index`.
 ///
 /// Takes `Entry` or `&Entry` items, so a caller that only has references — the
 /// window's filtered view — does not have to clone them.
@@ -87,14 +88,39 @@ pub fn plan<E: Borrow<Entry>>(
     index: &DirIndex,
     rules: &RuleSet,
 ) -> Result<Plan, RuleError> {
+    let relative =
+        entries.iter().map(|entry| entry.borrow()).find(|entry| !entry.path.is_absolute());
+    if let Some(relative) = relative {
+        return Err(RuleError::RelativePath { path: relative.path.clone() });
+    }
+
+    // No rule can change a name, so every row is a no-op and no conflict pass
+    // is needed. This is the default rule set.
+    if rules.rules.is_empty() {
+        let rows = entries
+            .iter()
+            .map(|entry| {
+                let entry = entry.borrow();
+                PlanRow {
+                    src: entry.path.clone(),
+                    dst: entry.path.clone(),
+                    status: Status::Unchanged,
+                    via_temp: false,
+                }
+            })
+            .collect();
+        return Ok(Plan { rows });
+    }
+
     let mut compiled = rules.compile()?;
     compiled.check_ranks(entries.len())?;
 
-    // `Sequence` consumes entries in name order, taken before the pipeline runs
-    // and independent of filesystem walk order. In a recursive scan
-    // that order is the path relative to the root — for one directory the two
-    // are the same. Only `Sequence` reads the result, so a pipeline without one
-    // never pays for the sort.
+    // `Sequence` consumes entries in source path order, taken before the
+    // pipeline runs and independent of filesystem walk order. In a recursive
+    // scan that order is the path relative to the root — for one directory the
+    // two are the same. Only `Sequence` reads the result, so a pipeline without
+    // one never pays for the sort. The order is over the entries passed in, so
+    // filtering or removing a row renumbers every later row.
     let rank: Vec<usize> = if compiled.needs_rank() {
         let mut order: Vec<usize> = (0..entries.len()).collect();
         order.sort_by(|&left, &right| {
@@ -120,23 +146,28 @@ pub fn plan<E: Borrow<Entry>>(
     let mut selection: Vec<u8> = Vec::new();
     let mut spare: Vec<u8> = Vec::new();
     let mut rows = Vec::with_capacity(entries.len());
+    let mut directory_sources: HashSet<&Path> = HashSet::new();
 
     for (position, entry) in entries.iter().enumerate() {
         let entry = entry.borrow();
+        if entry.kind == Kind::Dir {
+            directory_sources.insert(entry.path.as_path());
+        }
         current.clear();
         current.extend_from_slice(entry.name.as_bytes());
+        let parent = parent_of(&entry.path);
         compiled.apply(
             &mut current,
             rank.get(position).copied().unwrap_or(0),
             &mut selection,
             &mut spare,
-            parent_of(&entry.path),
+            parent,
         );
 
         let name = current.as_slice();
         // Rules change the basename only, so the destination keeps its own
         // entry's parent.
-        let dst = parent_of(&entry.path).join(OsStr::from_bytes(name));
+        let dst = parent.join(OsStr::from_bytes(name));
         let status = if name == entry.name.as_bytes() {
             Status::Unchanged
         } else if let Some(kind) = osname::validate(name, dst.as_os_str().as_bytes().len()) {
@@ -148,7 +179,91 @@ pub fn plan<E: Borrow<Entry>>(
     }
 
     conflict::resolve(&mut rows, index);
+    settle_path_lengths(&mut rows, &directory_sources, index);
     Ok(Plan { rows })
+}
+
+/// Rejects a directory move whose longer name would push any row under it past
+/// the kernel's path limit. The directory's own destination can be short while
+/// a deep child's final path is not, because the child is renamed first.
+fn settle_path_lengths(rows: &mut [PlanRow], directories: &HashSet<&Path>, index: &DirIndex) {
+    loop {
+        let mut moves: Vec<(PathBuf, PathBuf)> = rows
+            .iter()
+            .filter(|row| row.status == Status::Ok && directories.contains(row.src.as_path()))
+            .map(|row| (row.src.clone(), row.dst.clone()))
+            .collect();
+        if moves.is_empty() {
+            return;
+        }
+        // Only growth can overflow; a move that shortens a path is harmless.
+        moves.retain(|(old, new)| {
+            new.as_os_str().as_bytes().len() > old.as_os_str().as_bytes().len()
+        });
+        if moves.is_empty() {
+            return;
+        }
+
+        // Shallow first, so each move knows the growth it inherits from an
+        // ancestor. The nearest ancestor's total is then one lookup per row.
+        moves.sort_by_key(|(old, _)| old.components().count());
+        let mut growth: HashMap<PathBuf, usize> = HashMap::new();
+        for (old, new) in &moves {
+            let delta = new.as_os_str().as_bytes().len() - old.as_os_str().as_bytes().len();
+            let inherited = ancestor_growth(old, &growth);
+            growth.insert(old.clone(), inherited + delta);
+        }
+
+        let mut too_long: HashSet<PathBuf> = HashSet::new();
+        for row in rows.iter() {
+            let path = if row.status == Status::Ok { &row.dst } else { &row.src };
+            let total = path.as_os_str().as_bytes().len() + ancestor_growth(path, &growth);
+            if total >= osname::PATH_MAX
+                && let Some(dir) = nearest_move(path, &growth)
+            {
+                too_long.insert(dir);
+            }
+        }
+        if too_long.is_empty() {
+            return;
+        }
+
+        let mut changed = false;
+        for row in rows.iter_mut() {
+            if row.status == Status::Ok && too_long.contains(&row.src) {
+                row.status = Status::Invalid(InvalidKind::PathTooLong);
+                changed = true;
+            }
+        }
+        if !changed {
+            return;
+        }
+        conflict::resolve(rows, index);
+    }
+}
+
+/// The growth a path inherits from the nearest directory move above it.
+fn ancestor_growth(path: &Path, growth: &HashMap<PathBuf, usize>) -> usize {
+    let mut parent = path.parent();
+    while let Some(dir) = parent {
+        if let Some(&total) = growth.get(dir) {
+            return total;
+        }
+        parent = dir.parent();
+    }
+    0
+}
+
+/// The nearest directory move above `path`, as an owned path for the reject set.
+fn nearest_move(path: &Path, growth: &HashMap<PathBuf, usize>) -> Option<PathBuf> {
+    let mut parent = path.parent();
+    while let Some(dir) = parent {
+        if growth.contains_key(dir) {
+            return Some(dir.to_path_buf());
+        }
+        parent = dir.parent();
+    }
+    None
 }
 
 /// The directory a row lives in. Rules only ever change the basename, so this is
@@ -475,6 +590,115 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn relative_entries_are_rejected() {
+        let entries = vec![Entry {
+            path: PathBuf::from("a.txt"),
+            name: OsString::from("a.txt"),
+            kind: Kind::File,
+        }];
+
+        assert!(matches!(
+            plan(&entries, &DirIndex::default(), &RuleSet::default()),
+            Err(RuleError::RelativePath { .. })
+        ));
+    }
+
+    #[test]
+    fn removing_a_row_renumbers_the_sequence() {
+        let temp = tempfile::tempdir().unwrap();
+        write(temp.path(), &["a.txt", "b.txt", "c.txt"]);
+        let (entries, index) = scan_dir(temp.path()).expect("scan");
+        let kept: Vec<&Entry> = entries
+            .iter()
+            .filter(|entry| entry.name.as_os_str() != OsStr::new("a.txt"))
+            .collect();
+
+        let plan = plan(
+            &kept,
+            &index,
+            &RuleSet {
+                rules: vec![Rule::Sequence {
+                    start: 1,
+                    step: 1,
+                    pad: 2,
+                    place: SequencePlace::Replace,
+                    target: Target::Stem,
+                }],
+            },
+        )
+        .expect("plan");
+
+        assert_eq!(dst_of(&plan, "b.txt"), OsStr::new("01.txt"));
+        assert_eq!(dst_of(&plan, "c.txt"), OsStr::new("02.txt"));
+    }
+
+    #[test]
+    fn a_long_rename_chain_is_ordered_without_repeated_passes() {
+        const COUNT: usize = 10_000;
+        let root = Path::new("/chain");
+        let mut names = BTreeSet::new();
+        let mut entries = Vec::with_capacity(COUNT);
+        for index in 0..COUNT {
+            let name = OsString::from(format!("{index:05}"));
+            names.insert(name.clone());
+            entries.push(Entry { path: root.join(&name), name, kind: Kind::File });
+        }
+        let mut index = DirIndex::default();
+        index.insert(root.to_path_buf(), names);
+
+        let plan = plan(
+            &entries,
+            &index,
+            &RuleSet {
+                rules: vec![Rule::Sequence {
+                    start: 1,
+                    step: 1,
+                    pad: 5,
+                    place: SequencePlace::Replace,
+                    target: Target::Stem,
+                }],
+            },
+        )
+        .expect("plan");
+
+        // 00000 -> 00001 ... 09999 -> 10000 is one chain: the last row is the
+        // only one whose destination is free, so apply order runs backwards.
+        assert_eq!(plan.actionable(), COUNT);
+        assert_eq!(plan.rows[0].src.file_name().unwrap(), OsStr::new("09999"));
+        assert_eq!(plan.rows[COUNT - 1].src.file_name().unwrap(), OsStr::new("00000"));
+    }
+
+    #[test]
+    fn a_renamed_ancestor_can_push_a_child_over_the_path_limit() {
+        let dir = PathBuf::from("/d");
+        let mut deep = dir.clone();
+        while deep.as_os_str().len() < 3_890 {
+            deep.push("a".repeat(180));
+        }
+        let child = deep.join("f");
+        assert!(child.as_os_str().len() < crate::osname::PATH_MAX);
+
+        let entries = vec![
+            Entry { path: dir.clone(), name: OsString::from("d"), kind: Kind::Dir },
+            Entry { path: child.clone(), name: OsString::from("f"), kind: Kind::File },
+        ];
+        let rules = RuleSet {
+            rules: vec![Rule::Literal {
+                find: b"d".to_vec(),
+                replace: vec![b'D'; 200],
+                target: Target::Whole,
+            }],
+        };
+
+        let plan = plan(&entries, &DirIndex::default(), &rules).expect("plan");
+
+        let dir_row = plan.rows.iter().find(|row| row.src == dir).unwrap();
+        assert_eq!(dir_row.status, Status::Invalid(InvalidKind::PathTooLong));
+        let child_row = plan.rows.iter().find(|row| row.src == child).unwrap();
+        assert_eq!(child_row.status, Status::Unchanged);
+    }
+
     /// The only claim that needs a number rather than a check: 100k entries,
     /// `plan()` recompute under 50 ms. Pure, so it is timed over synthetic
     /// in-memory entries with no filesystem. Not run by default:
@@ -493,7 +717,7 @@ mod tests {
             entries.push(Entry { path: root.join(&name), name, kind: Kind::File });
         }
         let mut index = DirIndex::default();
-        index.existing.insert(root.to_path_buf(), names);
+        index.insert(root.to_path_buf(), names);
 
         let pipelines: [(&str, Vec<Rule>); 6] = [
             ("empty", vec![]),
@@ -550,6 +774,10 @@ mod tests {
             let started = std::time::Instant::now();
             let plan = plan(&entries, &index, &rules).expect("plan");
             let elapsed = started.elapsed();
+            assert!(
+                elapsed < std::time::Duration::from_millis(50),
+                "{label}: {COUNT} entries took {elapsed:?}"
+            );
             println!(
                 "{label}: {COUNT} entries -> {} rows, {} actionable, {elapsed:?}",
                 plan.rows.len(),

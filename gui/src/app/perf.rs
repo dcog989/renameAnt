@@ -112,7 +112,7 @@ fn synthetic(count: usize) -> (Vec<Entry>, DirIndex) {
         entries.push(Entry { path: root.join(&name), name, kind: Kind::File });
     }
     let mut index = DirIndex::default();
-    index.existing.insert(root.clone(), names);
+    index.insert(root.clone(), names);
     (entries, index)
 }
 

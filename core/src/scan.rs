@@ -10,7 +10,10 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::ffi::OsString;
 use std::fs;
 use std::io;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
+
+use crate::osname;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -35,13 +38,29 @@ pub struct Entry {
 /// directory holding no names.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DirIndex {
+    /// Write through `insert`, not directly: the folded view is built with it.
     pub existing: BTreeMap<PathBuf, BTreeSet<OsString>>,
+    /// The same names folded for a case-insensitive comparison, built with
+    /// `existing` so a plan does not rebuild them.
+    folded: BTreeMap<PathBuf, BTreeSet<Vec<u8>>>,
 }
 
 impl DirIndex {
     /// The names `parent` held when the scan visited it.
     pub fn names(&self, parent: &Path) -> Option<&BTreeSet<OsString>> {
         self.existing.get(parent)
+    }
+
+    /// The names `parent` held, folded for a case-insensitive comparison.
+    pub(crate) fn folded_names(&self, parent: &Path) -> Option<&BTreeSet<Vec<u8>>> {
+        self.folded.get(parent)
+    }
+
+    /// Records one directory's names in both the raw and the folded view.
+    pub fn insert(&mut self, parent: PathBuf, names: BTreeSet<OsString>) {
+        let folded = names.iter().map(|name| osname::case_fold(name.as_bytes())).collect();
+        self.folded.insert(parent.clone(), folded);
+        self.existing.insert(parent, names);
     }
 }
 
@@ -229,7 +248,7 @@ fn walk(
         }
     }
     // Keep the names that were read, so a row against one of them still sees it.
-    scan.index.existing.insert(dir.to_path_buf(), names);
+    scan.index.insert(dir.to_path_buf(), names);
     if let Some(error) = failed {
         return Err(error);
     }
