@@ -13,12 +13,13 @@ pub const DATE_FORMATS: [DateFormat; 4] =
     [DateFormat::Yyyymmdd, DateFormat::Ddmmyyyy, DateFormat::MmDdYyyy, DateFormat::YyyymmddHhmmss];
 
 /// The normalisations the editor offers, in the order `Normalize` applies them.
-pub const NORMALIZE_OPS: [(NormalizeOp, &str); 5] = [
+pub const NORMALIZE_OPS: [(NormalizeOp, &str); 6] = [
     (NormalizeOp::Nfc, "Unicode NFC"),
     (NormalizeOp::Trim, "trim"),
     (NormalizeOp::CollapseSpaces, "collapse spaces"),
     (NormalizeOp::SpacesToUnderscores, "spaces to underscores"),
     (NormalizeOp::StripControl, "strip control characters"),
+    (NormalizeOp::Ascii, "transliterate to ASCII"),
 ];
 
 /// The case styles the editor offers.
@@ -508,7 +509,7 @@ mod tests {
         });
         round_trips(RuleEdit {
             kind: RuleKind::Normalize,
-            normalize: [false, true, false, false, false],
+            normalize: [false, true, false, false, false, true],
             ..RuleEdit::default()
         });
     }

@@ -14,6 +14,7 @@ renameant-core = { path = "core" }
 
 base64 = "0.23"
 bstr = "1"
+deunicode = "1.6"
 # No wgpu: host GL/EGL is enough. system_fonts: bundled fonts have no CJK.
 eframe = {
   version = "0.37",

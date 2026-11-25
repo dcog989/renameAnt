@@ -111,6 +111,8 @@ pub enum NormalizeOp {
     CollapseSpaces,
     SpacesToUnderscores,
     StripControl,
+    /// Spell the text in ASCII, dropping a character that has no ASCII form.
+    Ascii,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -585,6 +587,7 @@ impl CompiledRule {
                         NormalizeOp::StripControl => {
                             current.chars().filter(|ch| !ch.is_control()).collect()
                         }
+                        NormalizeOp::Ascii => ascii_text(&current),
                     };
                 }
                 out.extend_from_slice(current.as_bytes());
@@ -592,6 +595,13 @@ impl CompiledRule {
             }
         }
     }
+}
+
+/// `text` spelled in ASCII. NFC first, so a decomposed accent is spelled from
+/// its composed letter instead of leaving the combining mark behind; a
+/// character with no ASCII form (private use, rare scripts) is dropped.
+fn ascii_text(text: &str) -> String {
+    text.nfc().filter_map(deunicode::deunicode_char).collect()
 }
 
 #[cfg(test)]
@@ -718,8 +728,33 @@ mod tests {
     }
 
     #[test]
+    fn normalize_ascii_spells_names_in_ascii() {
+        let rule = vec![Rule::Normalize { ops: vec![NormalizeOp::Ascii], target: Target::Stem }];
+        // A composed and a decomposed accent land on the same spelling.
+        assert_eq!(run(rule.clone(), "café.txt"), "cafe.txt");
+        assert_eq!(run(rule.clone(), "cafe\u{301}.txt"), "cafe.txt");
+        assert_eq!(run(rule.clone(), "Straße.txt"), "Strasse.txt");
+        assert_eq!(run(rule.clone(), "Привет.txt"), "Privet.txt");
+        // ASCII already passes through untouched.
+        assert_eq!(run(rule.clone(), "plain_name.txt"), "plain_name.txt");
+        // A character with no ASCII form is dropped, not left as a placeholder.
+        assert_eq!(run(rule, "a\u{e000}b.txt"), "ab.txt");
+    }
+
+    #[test]
+    fn normalize_ascii_turns_chinese_into_ascii_too() {
+        let rule = vec![Rule::Normalize { ops: vec![NormalizeOp::Ascii], target: Target::Whole }];
+        let spelled = run(rule, "中文.txt");
+        assert!(spelled.is_ascii(), "the whole name is ASCII: {spelled}");
+        assert_ne!(spelled, ".txt", "the name keeps something");
+    }
+
+    #[test]
     fn utf8_only_rules_skip_non_utf8_names() {
-        let rules = vec![Rule::Case { style: CaseStyle::Upper, target: Target::Whole }];
+        let rules = vec![
+            Rule::Case { style: CaseStyle::Upper, target: Target::Whole },
+            Rule::Normalize { ops: vec![NormalizeOp::Ascii], target: Target::Whole },
+        ];
         let mut compiled = RuleSet { rules }.compile().unwrap();
         let mut current = b"\xff\xfe".to_vec();
         let mut sel = Vec::new();

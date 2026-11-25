@@ -22,7 +22,7 @@ Linux file / directory bulk renamer GUI. Provides fast and safe renaming with mu
 - number (prefix, suffix, length)
 - date (prefix, suffix, format (yyyymmdd, ddmmyyyy, mmddyyyy, yyyymmdd-hhmmss))
 - change case (upper, lower, title, kebab, camel, pascal, snake, etc.)
-- normalize
+- normalize (NFC, trim, collapse spaces, underscores, strip control characters, transliterate to ASCII)
 
 ## Install
 
