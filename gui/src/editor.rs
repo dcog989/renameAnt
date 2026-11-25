@@ -8,8 +8,8 @@ use egui::{Color32, DragValue, Frame, RichText, Stroke, Ui};
 use renameant_core::rule::Target;
 
 use crate::edit::{
-    CASE_STYLES, InsertKind, NORMALIZE_OPS, NumberPlace, RuleEdit, RuleKind, case_label,
-    default_rules, target_label,
+    CASE_STYLES, DATE_FORMATS, DatePlace, InsertKind, NORMALIZE_OPS, NumberPlace, RuleEdit,
+    RuleKind, case_label, date_format_label, default_rules, target_label,
 };
 
 /// The add-rule row drawn under the list; the list leaves it this much room.
@@ -37,6 +37,7 @@ fn icon(kind: RuleKind) -> &'static str {
         RuleKind::Trim => "✂",
         RuleKind::Insert => "➕",
         RuleKind::Number => "🔢",
+        RuleKind::Date => "📅",
         RuleKind::Case => "🔤",
         RuleKind::Normalize => "✨",
     }
@@ -263,6 +264,34 @@ fn fields(ui: &mut Ui, index: usize, edit: &mut RuleEdit) {
                 ui.add(DragValue::new(&mut edit.pad).range(1..=MAX_PAD))
                     .accessible_name(name(index, "digits"));
             }
+            RuleKind::Date => {
+                crate::style::pointer(
+                    egui::ComboBox::from_id_salt(("date place", index))
+                        .selected_text(edit.date_place.label())
+                        .show_ui(ui, |ui| {
+                            for place in DatePlace::ALL {
+                                ui.selectable_value(&mut edit.date_place, place, place.label());
+                            }
+                        })
+                        .response,
+                )
+                .accessible_name(name(index, "where"));
+                crate::style::pointer(
+                    egui::ComboBox::from_id_salt(("date format", index))
+                        .selected_text(date_format_label(edit.date_format))
+                        .show_ui(ui, |ui| {
+                            for format in DATE_FORMATS {
+                                ui.selectable_value(
+                                    &mut edit.date_format,
+                                    format,
+                                    date_format_label(format),
+                                );
+                            }
+                        })
+                        .response,
+                )
+                .accessible_name(name(index, "format"));
+            }
             RuleKind::Case => {
                 crate::style::pointer(
                     egui::ComboBox::from_id_salt(("case", index))
@@ -311,6 +340,7 @@ fn hint(ui: &mut Ui, edit: &RuleEdit) {
             "the position counts characters, so UTF-8 names only"
         }
         RuleKind::Number => "numbered in name order, not in this table's order",
+        RuleKind::Date => "today's date, the same for every row in this preview",
         _ => return,
     };
     ui.label(RichText::new(text).weak());

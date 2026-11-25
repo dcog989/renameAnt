@@ -4,7 +4,17 @@
 //! its kind never throws away what is already typed. One kind is one card the
 //! user sees; a kind may pick a different `Rule` variant from its settings.
 
-use renameant_core::rule::{CaseStyle, InsertRemoveOp, NormalizeOp, Rule, SequencePlace, Target};
+use renameant_core::rule::{
+    CaseStyle, DateFormat, InsertRemoveOp, NormalizeOp, Rule, SequencePlace, Target,
+};
+
+/// The date formats the editor offers.
+pub const DATE_FORMATS: [DateFormat; 4] = [
+    DateFormat::Yyyymmdd,
+    DateFormat::Ddmmyyyy,
+    DateFormat::MmDdYyyy,
+    DateFormat::YyyymmddHhmmss,
+];
 
 /// The normalisations the editor offers, in the order `Normalize` applies them.
 pub const NORMALIZE_OPS: [(NormalizeOp, &str); 5] = [
@@ -36,17 +46,19 @@ pub enum RuleKind {
     Trim,
     Insert,
     Number,
+    Date,
     Case,
     Normalize,
 }
 
 impl RuleKind {
-    pub const ALL: [RuleKind; 7] = [
+    pub const ALL: [RuleKind; 8] = [
         RuleKind::Replace,
         RuleKind::Remove,
         RuleKind::Trim,
         RuleKind::Insert,
         RuleKind::Number,
+        RuleKind::Date,
         RuleKind::Case,
         RuleKind::Normalize,
     ];
@@ -58,6 +70,7 @@ impl RuleKind {
             RuleKind::Trim => "trim",
             RuleKind::Insert => "insert",
             RuleKind::Number => "number",
+            RuleKind::Date => "date",
             RuleKind::Case => "change case",
             RuleKind::Normalize => "normalize",
         }
@@ -90,6 +103,24 @@ impl NumberPlace {
             NumberPlace::Whole => "replace whole name",
             NumberPlace::Stem => "replace stem",
             NumberPlace::Extension => "replace extension",
+        }
+    }
+}
+
+/// Where a date rule puts its stamp.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DatePlace {
+    Prefix,
+    Suffix,
+}
+
+impl DatePlace {
+    pub const ALL: [DatePlace; 2] = [DatePlace::Prefix, DatePlace::Suffix];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            DatePlace::Prefix => "as prefix",
+            DatePlace::Suffix => "as suffix",
         }
     }
 }
@@ -145,6 +176,8 @@ pub struct RuleEdit {
     pub step: u64,
     pub pad: u64,
     pub number_place: NumberPlace,
+    pub date_place: DatePlace,
+    pub date_format: DateFormat,
     pub normalize: [bool; NORMALIZE_OPS.len()],
 }
 
@@ -169,6 +202,8 @@ impl Default for RuleEdit {
             step: 1,
             pad: 3,
             number_place: NumberPlace::Stem,
+            date_place: DatePlace::Prefix,
+            date_format: DateFormat::Yyyymmdd,
             normalize: [false; NORMALIZE_OPS.len()],
         }
     }
@@ -243,6 +278,14 @@ impl RuleEdit {
                     target,
                 }
             }
+            RuleKind::Date => Rule::Date {
+                format: self.date_format,
+                place: match self.date_place {
+                    DatePlace::Prefix => SequencePlace::Prefix,
+                    DatePlace::Suffix => SequencePlace::Suffix,
+                },
+                target: self.target,
+            },
             RuleKind::Case => Rule::Case { style: self.case, target: self.target },
             RuleKind::Normalize => Rule::Normalize {
                 ops: NORMALIZE_OPS
@@ -328,6 +371,15 @@ impl RuleEdit {
                 edit.step = *step;
                 edit.pad = *pad as u64;
             }
+            Rule::Date { format, place, target } => {
+                edit.kind = RuleKind::Date;
+                edit.date_format = *format;
+                edit.date_place = match place {
+                    SequencePlace::Prefix => DatePlace::Prefix,
+                    SequencePlace::Suffix | SequencePlace::Replace => DatePlace::Suffix,
+                };
+                edit.target = *target;
+            }
             Rule::Normalize { ops, target } => {
                 edit.kind = RuleKind::Normalize;
                 edit.target = *target;
@@ -369,6 +421,15 @@ pub fn target_label(target: Target) -> &'static str {
         Target::Stem => "stem",
         Target::Ext => "extension",
         Target::Whole => "whole name",
+    }
+}
+
+pub fn date_format_label(format: DateFormat) -> &'static str {
+    match format {
+        DateFormat::Yyyymmdd => "yyyymmdd",
+        DateFormat::Ddmmyyyy => "ddmmyyyy",
+        DateFormat::MmDdYyyy => "mmddyyyy",
+        DateFormat::YyyymmddHhmmss => "yyyymmdd-hhmmss",
     }
 }
 
@@ -444,6 +505,13 @@ mod tests {
         round_trips(RuleEdit {
             kind: RuleKind::Number,
             number_place: NumberPlace::Extension,
+            ..RuleEdit::default()
+        });
+        round_trips(RuleEdit {
+            kind: RuleKind::Date,
+            date_place: DatePlace::Suffix,
+            date_format: DateFormat::YyyymmddHhmmss,
+            target: Target::Stem,
             ..RuleEdit::default()
         });
         round_trips(RuleEdit {

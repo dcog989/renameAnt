@@ -32,6 +32,8 @@ eframe = {
 egui = { version = "0.37", features = ["monochrome_emoji_fonts"] }
 # Default features pull a mime guesser only the image loaders use; serde persists column widths.
 egui_extras = { version = "0.37", default-features = false, features = ["serde"] }
+# Local calendar dates for the date rule; default features read the system tz.
+jiff = "1"
 regex = "1"
 # Portal backend (rfd's default): no libgtk in the AppImage, only xdg-desktop-portal.
 rfd = "0.18"

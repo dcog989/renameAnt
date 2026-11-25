@@ -7,6 +7,7 @@
 use std::io::Write;
 
 use bstr::ByteSlice;
+use jiff::ZonedDateTime;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use unicode_normalization::UnicodeNormalization;
@@ -47,7 +48,7 @@ pub enum CaseStyle {
     Pascal,
 }
 
-/// Where a sequence rule puts the number.
+/// Where a rule that generates text puts it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SequencePlace {
@@ -85,6 +86,17 @@ pub enum InsertRemoveOp {
         start: usize,
         end: usize,
     },
+}
+
+/// The date stamp formats a date rule can write.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DateFormat {
+    Yyyymmdd,
+    Ddmmyyyy,
+    MmDdYyyy,
+    /// Date and time of day, seconds included.
+    YyyymmddHhmmss,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -129,6 +141,13 @@ pub enum Rule {
         place: SequencePlace,
         target: Target,
     },
+    /// Today's date, captured once when the rule set compiles, so every row in
+    /// one preview gets the same stamp.
+    Date {
+        format: DateFormat,
+        place: SequencePlace,
+        target: Target,
+    },
     Normalize {
         ops: Vec<NormalizeOp>,
         target: Target,
@@ -168,6 +187,7 @@ enum CompiledRule {
     Case { style: CaseStyle, target: Target },
     InsertRemove { op: InsertRemoveOp, target: Target },
     Sequence { start: u64, step: u64, pad: usize, place: SequencePlace, target: Target },
+    Date { stamp: String, place: SequencePlace, target: Target },
     Normalize { ops: Vec<NormalizeOp>, target: Target },
 }
 
@@ -218,6 +238,11 @@ impl RuleSet {
                         target: *target,
                     }
                 }
+                Rule::Date { format, place, target } => CompiledRule::Date {
+                    stamp: date_stamp(*format, &ZonedDateTime::now()),
+                    place: *place,
+                    target: *target,
+                },
                 Rule::Normalize { ops, target } => {
                     CompiledRule::Normalize { ops: ops.clone(), target: *target }
                 }
@@ -263,6 +288,20 @@ impl CompiledRuleSet {
     }
 }
 
+/// The stamp `format` writes for `now`, read in the datetime's own time zone.
+fn date_stamp(format: DateFormat, now: &ZonedDateTime) -> String {
+    let (year, month, day) = (now.year(), now.month(), now.day());
+    match format {
+        DateFormat::Yyyymmdd => format!("{year:04}{month:02}{day:02}"),
+        DateFormat::Ddmmyyyy => format!("{day:02}{month:02}{year:04}"),
+        DateFormat::MmDdYyyy => format!("{month:02}{day:02}{year:04}"),
+        DateFormat::YyyymmddHhmmss => {
+            let (hour, minute, second) = (now.hour(), now.minute(), now.second());
+            format!("{year:04}{month:02}{day:02}-{hour:02}{minute:02}{second:02}")
+        }
+    }
+}
+
 impl CompiledRule {
     fn target(&self) -> Target {
         match self {
@@ -271,6 +310,7 @@ impl CompiledRule {
             | CompiledRule::Case { target, .. }
             | CompiledRule::InsertRemove { target, .. }
             | CompiledRule::Sequence { target, .. }
+            | CompiledRule::Date { target, .. }
             | CompiledRule::Normalize { target, .. } => *target,
         }
     }
@@ -461,6 +501,20 @@ impl CompiledRule {
                 }
                 true
             }
+            CompiledRule::Date { stamp, place, .. } => {
+                match place {
+                    SequencePlace::Prefix => {
+                        out.extend_from_slice(stamp.as_bytes());
+                        out.extend_from_slice(sel);
+                    }
+                    SequencePlace::Suffix => {
+                        out.extend_from_slice(sel);
+                        out.extend_from_slice(stamp.as_bytes());
+                    }
+                    SequencePlace::Replace => out.extend_from_slice(stamp.as_bytes()),
+                }
+                true
+            }
             CompiledRule::Normalize { ops, .. } => {
                 let Ok(text) = std::str::from_utf8(sel) else {
                     return false;
@@ -555,6 +609,36 @@ mod tests {
         }];
         assert_eq!(run_ranked(rules.clone(), "b.txt", 0), "001.txt");
         assert_eq!(run_ranked(rules, "a.txt", 1), "003.txt");
+    }
+
+    #[test]
+    fn date_stamps_use_the_chosen_format() {
+        let at: ZonedDateTime = "2026-03-04T05:06:07+01:00[Europe/Berlin]".parse().unwrap();
+        assert_eq!(date_stamp(DateFormat::Yyyymmdd, &at), "20260304");
+        assert_eq!(date_stamp(DateFormat::Ddmmyyyy, &at), "04032026");
+        assert_eq!(date_stamp(DateFormat::MmDdYyyy, &at), "03042026");
+        assert_eq!(date_stamp(DateFormat::YyyymmddHhmmss, &at), "20260304-050607");
+    }
+
+    #[test]
+    fn date_rule_places_its_stamp() {
+        let stamped = |place| {
+            let mut compiled = CompiledRuleSet {
+                rules: vec![CompiledRule::Date {
+                    stamp: "20260304".into(),
+                    place,
+                    target: Target::Stem,
+                }],
+                expansion: String::new(),
+            };
+            let mut current = b"photo.jpg".to_vec();
+            let mut sel = Vec::new();
+            let mut spare = Vec::new();
+            compiled.apply(&mut current, 0, &mut sel, &mut spare);
+            String::from_utf8(current).unwrap()
+        };
+        assert_eq!(stamped(SequencePlace::Prefix), "20260304photo.jpg");
+        assert_eq!(stamped(SequencePlace::Suffix), "photo20260304.jpg");
     }
 
     #[test]

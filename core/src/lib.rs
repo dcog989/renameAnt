@@ -21,6 +21,7 @@ pub use journal::{Journal, JournalRecord, RunId, RunOutcome, Session};
 pub use osname::{NAME_MAX, PATH_MAX};
 pub use plan::{ConflictKind, InvalidKind, Plan, PlanRow, Status};
 pub use rule::{
-    CaseStyle, InsertRemoveOp, NormalizeOp, Rule, RuleError, RuleSet, SequencePlace, Target,
+    CaseStyle, DateFormat, InsertRemoveOp, NormalizeOp, Rule, RuleError, RuleSet, SequencePlace,
+    Target,
 };
 pub use scan::{DirIndex, Entry, Kind, scan_dir, scan_tree};
