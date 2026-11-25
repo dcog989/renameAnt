@@ -116,7 +116,9 @@ pub fn scan_paths(paths: &[PathBuf], recursive: bool) -> io::Result<Scan> {
 
     for dir in &dirs {
         // A recursive walk of the parent already covers a nested pick.
-        if recursive && dirs.iter().any(|parent| parent != dir && dir.starts_with(parent)) {
+        if recursive
+            && dirs.iter().any(|parent| parent != dir && dir.starts_with(parent.as_path()))
+        {
             continue;
         }
         if walk(dir, recursive, &mut scan, MAX_SCAN_ENTRIES, true).is_err() {
