@@ -42,8 +42,6 @@ const ACTION_TEXT_SIZE: f32 = 20.0;
 /// The narrowest a modal gets, so a short report does not squeeze its text into
 /// a column.
 const OVERLAY_WIDTH: f32 = 520.0;
-/// Only used when neither XDG_STATE_HOME nor HOME is set.
-const FALLBACK_JOURNAL: &str = "renameant-journal.jsonl";
 /// Only used when neither XDG_CONFIG_HOME nor HOME is set.
 const FALLBACK_CONFIG: &str = "renameant-rules.json";
 
@@ -167,11 +165,8 @@ impl App {
             }
             Err(error) => (default_rules(), format!("the saved rules could not be read: {error}")),
         };
-        let journal = journal::default_path().unwrap_or_else(|_| {
-            std::env::current_dir()
-                .map(|dir| dir.join(FALLBACK_JOURNAL))
-                .unwrap_or_else(|_| std::env::temp_dir().join(FALLBACK_JOURNAL))
-        });
+        let journal = journal::default_path()
+            .expect("main resolved the state directory before opening the window");
         let mut app = App {
             model: PlanModel::default(),
             scan_truncated: false,

@@ -78,7 +78,7 @@ pub fn confirm_undo(ui: &mut Ui, session: &Session) -> Choice {
     let (run, renames) = (session.run, session.renames);
     ui.heading(format!("Undo run {run}"));
     ui.label(format!(
-        "{renames} completed renames, reversed newest first. A row whose file has moved is reported, not forced."
+        "{renames} journal records, reversed newest first. A row whose file has moved is reported, not forced."
     ));
     let note = history::note(session);
     if !note.is_empty() {
@@ -102,7 +102,7 @@ pub fn confirm_remove(ui: &mut Ui, session: &Session) -> Choice {
     let (run, renames) = (session.run, session.renames);
     ui.heading(format!("Remove run {run} from the journal"));
     ui.label(format!(
-        "Its {renames} renames stay as they are on disk, but this run can no longer be undone."
+        "Its {renames} journal records are removed. The files stay as they are on disk, but this run can no longer be undone."
     ));
     buttons(ui, "Remove", Choice::Remove(run))
 }

@@ -105,6 +105,9 @@ pub fn show(
     // a row after a redo, so upgrade when redo gets its own command.
     let reversed = history.evidence(sessions, journal);
 
+    // A run whose undo target was pruned or removed still carries `undo_of` in
+    // the journal; only name it when the target is still in the list.
+    let runs: HashSet<RunId> = sessions.iter().map(|session| session.run).collect();
     let mut order: Vec<&Session> = sessions.iter().collect();
     if !history.oldest_first {
         order.reverse();
@@ -140,7 +143,7 @@ pub fn show(
                     }
                 }
                 ui.monospace(format::local_text(session.at));
-                ui.label(format!("{} renames", session.renames));
+                ui.label(format!("{} records", session.renames));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
                         .add_enabled(!busy, egui::Button::new("✕").small())
@@ -160,7 +163,9 @@ pub fn show(
                     && rows.iter().all(|(from, to)| is_reversed(evidence, from, to));
                 marks.push(if all { "reversed" } else { "partly reversed" }.to_owned());
             }
-            if let Some(undone) = session.undo_of {
+            if let Some(undone) = session.undo_of
+                && runs.contains(&undone)
+            {
                 marks.push(format!("undo of run {undone}"));
             }
             let note = note(session);
