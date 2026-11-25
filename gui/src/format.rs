@@ -16,7 +16,7 @@ pub fn status_label(status: Status) -> &'static str {
         Status::Conflict(ConflictKind::TargetExists) => "name is taken",
         Status::Conflict(ConflictKind::CaseOnly) => "case-only collision",
         Status::Invalid(InvalidKind::Empty) => "empty name",
-        Status::Invalid(InvalidKind::IllegalChar) => "illegal character",
+        Status::Invalid(InvalidKind::IllegalChar) => "illegal or reserved name",
         Status::Invalid(InvalidKind::NameTooLong) => "over 255 bytes",
         Status::Invalid(InvalidKind::PathTooLong) => "path too long",
     }
