@@ -22,6 +22,16 @@ pub fn texture(ctx: &egui::Context) -> TextureHandle {
     ctx.load_texture("renameant-logo", image, TextureOptions::LINEAR)
 }
 
+/// The same pixels as the window icon. Wayland compositors ignore it and read
+/// the desktop file instead; X11 sessions take it.
+pub fn icon() -> egui::IconData {
+    egui::IconData {
+        rgba: RGBA.to_vec(),
+        width: SIZE[0] as u32,
+        height: SIZE[1] as u32,
+    }
+}
+
 /// Paints the logo centred and faint in the area `ui` has left, before the
 /// panel's own text draws over it.
 pub fn paint(ui: &egui::Ui, texture: &TextureHandle) {

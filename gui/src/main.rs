@@ -26,6 +26,7 @@ fn main() -> eframe::Result {
         viewport: ViewportBuilder::default()
             .with_app_id("renameant")
             .with_title("renameAnt")
+            .with_icon(logo::icon())
             .with_inner_size(WINDOW_SIZE),
         // GL/EGL comes from the host, and wgpu is a large dependency
         // the AppImage does not need.

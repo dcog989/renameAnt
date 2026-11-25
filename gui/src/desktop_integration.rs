@@ -1,7 +1,9 @@
-//! Desktop integration for the AppImage build.
+//! Desktop integration for the AppImage build and local runs.
 //!
 //! An AppImage has no installer, so the menu entry and icon are written on
-//! launch. Release filenames carry the version, so `Exec` is repointed whenever
+//! launch. KDE reads a Wayland window's icon from the desktop file named after
+//! its app id, so a `cargo run` needs one too; that entry is hidden from the
+//! menu. Release filenames carry the version, so `Exec` is repointed whenever
 //! the running file differs.
 
 use std::path::{Path, PathBuf};
@@ -12,12 +14,20 @@ const ICON_SVG: &[u8] = include_bytes!("../../assets/logo.svg");
 /// The same entry `just package` puts inside the AppImage, so names, icon and
 /// window class cannot drift.
 const DESKTOP_TEMPLATE: &str = include_str!("../../dist/renameant.desktop");
-/// Records the AppImage this entry was generated for, so a stale entry is
+/// Records the executable this entry was generated for, so a stale entry is
 /// recognised without parsing the quoted `Exec` value.
-const MARKER: &str = "X-RenameAnt-AppImage=";
+const MARKER: &str = "X-RenameAnt-Exec=";
+/// A system install already provides the entry; a user copy would shadow it.
+const SYSTEM_DESKTOP_FILE: &str = "/usr/share/applications/renameant.desktop";
 
-/// Registers the running AppImage, or removes an entry left behind by one that
-/// no longer exists.
+/// What the entry should launch: the AppImage, or a build run directly.
+struct Target {
+    path: PathBuf,
+    appimage: bool,
+}
+
+/// Registers the running AppImage, or the binary for a local run, and drops its
+/// icon where the theme looks for it.
 pub fn install() {
     if let Err(error) = sync() {
         eprintln!("renameAnt: desktop integration failed: {error}");
@@ -25,24 +35,31 @@ pub fn install() {
 }
 
 fn sync() -> std::io::Result<()> {
-    let data = data_home()?;
-    let applications = data.join("applications");
-
-    let Some(appimage) = running_appimage() else {
-        remove_generated(&applications);
+    if Path::new(SYSTEM_DESKTOP_FILE).exists() {
+        return Ok(());
+    }
+    let Some(target) = running_target() else {
         return Ok(());
     };
 
+    let data = data_home()?;
+    let applications = data.join("applications");
     let icons = data.join("icons/hicolor/scalable/apps");
     std::fs::create_dir_all(&applications)?;
     std::fs::create_dir_all(&icons)?;
     write_if_changed(&icons.join(ICON_FILE), ICON_SVG)?;
 
     let path = applications.join(DESKTOP_FILE);
-    let content = appimage_entry(&appimage);
-    if std::fs::read_to_string(&path).ok().as_deref() != Some(content.as_str()) {
-        std::fs::write(&path, content.as_bytes())?;
-        refresh_menu(&applications);
+    let existing = std::fs::read_to_string(&path).ok();
+    // A dev run must not hide a working AppImage entry, and every run keeps an
+    // entry it did not write. Only an AppImage run repoints unconditionally.
+    let keep = !target.appimage && existing.as_deref().is_some_and(is_current);
+    if !keep {
+        let content = entry(&target);
+        if existing.as_deref() != Some(content.as_str()) {
+            std::fs::write(&path, content.as_bytes())?;
+            refresh_menu(&applications);
+        }
     }
     Ok(())
 }
@@ -64,14 +81,25 @@ fn data_home() -> std::io::Result<PathBuf> {
 
 /// The AppImage launcher sets `APPIMAGE` to the file the user runs. Inside the
 /// mount `current_exe()` points at a path that disappears on exit.
-fn running_appimage() -> Option<PathBuf> {
-    std::env::var_os("APPIMAGE")
+fn running_target() -> Option<Target> {
+    if let Some(path) = std::env::var_os("APPIMAGE")
         .map(PathBuf::from)
         .filter(|path| path.is_file())
+    {
+        return Some(Target { path, appimage: true });
+    }
+    let path = std::env::current_exe().ok()?;
+    Some(Target { path, appimage: false })
 }
 
-fn appimage_entry(appimage: &Path) -> String {
-    let exec = exec_quote(&appimage.to_string_lossy());
+/// Whether the entry can stay: one we did not write, or one whose recorded
+/// executable still exists.
+fn is_current(content: &str) -> bool {
+    marker_value(content).is_none_or(|path| Path::new(path).is_file())
+}
+
+fn entry(target: &Target) -> String {
+    let exec = exec_quote(&target.path.to_string_lossy());
     let mut entry = String::new();
     for line in DESKTOP_TEMPLATE.lines() {
         if let Some(rest) = line.strip_prefix("Exec=") {
@@ -81,25 +109,13 @@ fn appimage_entry(appimage: &Path) -> String {
             entry.push('\n');
         }
     }
-    entry.push_str(&format!("{MARKER}{}\n", appimage.display()));
-    entry
-}
-
-/// Deletes the entry only when it carries `MARKER`: a system install could
-/// otherwise be removed by a run of a different build.
-fn remove_generated(applications: &Path) {
-    let path = applications.join(DESKTOP_FILE);
-    let Ok(content) = std::fs::read_to_string(&path) else {
-        return;
-    };
-    let Some(appimage) = marker_value(&content) else {
-        return;
-    };
-    if Path::new(appimage).is_file() {
-        return;
+    // A menu entry for `target/debug/renameant-gui` is noise, but the icon still
+    // has to be resolvable.
+    if !target.appimage {
+        entry.push_str("NoDisplay=true\n");
     }
-    let _ = std::fs::remove_file(&path);
-    refresh_menu(applications);
+    entry.push_str(&format!("{MARKER}{}\n", target.path.display()));
+    entry
 }
 
 fn marker_value(content: &str) -> Option<&str> {
@@ -148,9 +164,13 @@ fn refresh_menu(applications: &Path) {
 mod tests {
     use super::*;
 
+    fn entry_for(path: &str) -> String {
+        entry(&Target { path: PathBuf::from(path), appimage: true })
+    }
+
     #[test]
-    fn entry_registers_the_running_appimage() {
-        let entry = appimage_entry(Path::new("/home/user/Apps/renameAnt 2.AppImage"));
+    fn appimage_entry_registers_the_running_file() {
+        let entry = entry_for("/home/user/Apps/renameAnt 2.AppImage");
         assert!(
             entry.contains("Exec=\"/home/user/Apps/renameAnt 2.AppImage\"\n"),
             "{entry}"
@@ -159,19 +179,40 @@ mod tests {
             entry.contains(&format!("{MARKER}/home/user/Apps/renameAnt 2.AppImage\n")),
             "{entry}"
         );
+        assert!(!entry.contains("NoDisplay=true"), "{entry}");
         // Everything else in the template survives the `Exec` rewrite.
         assert!(entry.contains("Icon=renameant\n"), "{entry}");
         assert!(entry.contains("StartupWMClass=renameant\n"), "{entry}");
     }
 
     #[test]
+    fn dev_entry_is_hidden_and_points_at_the_binary() {
+        let entry = entry(&Target {
+            path: PathBuf::from("/repo/target/debug/renameant-gui"),
+            appimage: false,
+        });
+        assert!(
+            entry.contains("Exec=\"/repo/target/debug/renameant-gui\"\n"),
+            "{entry}"
+        );
+        assert!(entry.contains("NoDisplay=true\n"), "{entry}");
+    }
+
+    #[test]
     fn marker_is_read_back_verbatim() {
-        let entry = appimage_entry(Path::new("/opt/renameAnt-0.1.0-x86_64.AppImage"));
+        let entry = entry_for("/opt/renameAnt-0.1.0-x86_64.AppImage");
         assert_eq!(
             marker_value(&entry),
             Some("/opt/renameAnt-0.1.0-x86_64.AppImage")
         );
         assert_eq!(marker_value("[Desktop Entry]\n"), None);
+    }
+
+    #[test]
+    fn only_an_entry_whose_executable_survives_is_current() {
+        assert!(is_current("[Desktop Entry]\nIcon=renameant\n"));
+        assert!(is_current(&entry_for("/opt/renameAnt-0.1.0-x86_64.AppImage")));
+        assert!(!is_current(&entry_for("/opt/moved-away.AppImage")));
     }
 
     #[test]
