@@ -5,6 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
+use egui::emath::GuiRounding as _;
 use egui::{Align, Color32, Layout};
 use egui_extras::{Column, TableBuilder};
 
@@ -35,6 +36,8 @@ const REMOVE_CHIP_CORNER: u8 = 4;
 /// The sort marker beside a header: a painted triangle, not a glyph.
 const ARROW_WIDTH: f32 = 10.0;
 const ARROW_HEIGHT: f32 = 6.0;
+/// How strong a row's status tint is on a striped and an unstriped row.
+const ROW_FILL_ALPHA: [u8; 2] = [56, 36];
 
 /// What a frame of the table changed: the path a row was removed by, if any.
 /// The caller drops that path from its picked list too.
@@ -104,12 +107,17 @@ pub fn show(ui: &mut egui::Ui, model: &mut PlanModel) -> Change {
                     });
                 });
             });
-        table.body(|body| {
+        table.body(|mut body| {
+            // `rows` consumes the body, so keep its painter for the row fills: a
+            // cell's own painter is clipped to the cell, which would leave the
+            // gaps between columns unpainted.
+            let painter = body.ui_mut().painter().clone();
             body.rows(ROW_HEIGHT, view_len, |mut row| {
                 let at = row.index();
                 let plan_index = model.view[at];
                 let entry = &model.plan.rows[plan_index];
                 row.col(|ui| {
+                    row_fill(&painter, ui, entry.status, at);
                     cell(ui, |ui| {
                         ui.colored_label(
                             status_color(entry.status),
@@ -118,11 +126,13 @@ pub fn show(ui: &mut egui::Ui, model: &mut PlanModel) -> Change {
                     });
                 });
                 row.col(|ui| {
+                    row_fill(&painter, ui, entry.status, at);
                     cell(ui, |ui| {
                         ui.add(egui::Label::new(path_text(ui, &entry.src)).truncate());
                     });
                 });
                 row.col(|ui| {
+                    row_fill(&painter, ui, entry.status, at);
                     cell(ui, |ui| {
                         let name = egui::RichText::new(format::file_text(&entry.dst)).strong();
                         ui.add(egui::Label::new(name).truncate());
@@ -135,6 +145,7 @@ pub fn show(ui: &mut egui::Ui, model: &mut PlanModel) -> Change {
                     .and_then(|meta| meta.mtime)
                     .map_or_else(String::new, |mtime| format::local_text(unix_seconds(mtime)));
                 row.col(|ui| {
+                    row_fill(&painter, ui, entry.status, at);
                     cell(ui, |ui| {
                         right(ui, |ui| {
                             ui.label(size);
@@ -142,6 +153,7 @@ pub fn show(ui: &mut egui::Ui, model: &mut PlanModel) -> Change {
                     });
                 });
                 row.col(|ui| {
+                    row_fill(&painter, ui, entry.status, at);
                     cell(ui, |ui| {
                         let width = text_width(ui, &modified);
                         center(ui, width, |ui| {
@@ -154,6 +166,7 @@ pub fn show(ui: &mut egui::Ui, model: &mut PlanModel) -> Change {
                 let removed_here = entry.src.clone();
                 let mut remove_rect: Option<egui::Rect> = None;
                 row.col(|ui| {
+                    row_fill(&painter, ui, entry.status, at);
                     cell(ui, |ui| {
                         center(ui, REMOVE_CHIP, |ui| {
                             // A painted chip, not an interactive widget: a
@@ -223,6 +236,26 @@ fn path_text(ui: &egui::Ui, path: &Path) -> egui::text::LayoutJob {
     job.append(&dir, 0.0, styled(ui.visuals().text_color()));
     job.append(&name, 0.0, styled(ui.visuals().strong_text_color()));
     job
+}
+
+/// Paints a row's status tint on one of its cells, with the table body's painter
+/// so the fill is not clipped to the cell. The rect is grown by half the cell
+/// spacing, as egui_extras grows its stripe, so the cells' fills meet without
+/// seams. Two strengths alternate with the stripes.
+fn row_fill(painter: &egui::Painter, ui: &egui::Ui, status: Status, row_index: usize) {
+    // "no match" is the default, so it keeps the table's plain stripes.
+    if status == Status::Unchanged {
+        return;
+    }
+    let color = status_color(status);
+    let fill = Color32::from_rgba_unmultiplied(
+        color.r(),
+        color.g(),
+        color.b(),
+        ROW_FILL_ALPHA[row_index % 2],
+    );
+    let rect = ui.max_rect().expand2(0.5 * ui.spacing().item_spacing).round_ui();
+    painter.rect_filled(rect, egui::CornerRadius::ZERO, fill);
 }
 
 /// One table cell's content, inset by [`style::CELL_PADDING`] on both sides so
