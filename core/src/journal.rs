@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
 use rustix::fs::{FlockOperation, flock, fsync};
@@ -101,11 +101,13 @@ pub enum JournalRecord {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Session {
     pub run: RunId,
     pub at: u64,
-    /// Completed renames, which is exactly what undo can reverse.
+    /// Completed rename records, which is exactly what undo can reverse. A
+    /// staged cycle writes two records per file, so a two-file cycle counts
+    /// four.
     pub renames: usize,
     pub overwrite: bool,
     pub undo_of: Option<RunId>,
@@ -136,17 +138,12 @@ struct RecordMeta {
     undo_of: Option<RunId>,
 }
 
-/// A complete journal line: its byte range in the file, and its metadata.
-type Line = (usize, usize, RecordMeta);
-
-/// The journal's bytes and parsed lines, with its locks held.
-struct Locked {
-    /// Kept open so a fallback lock (the journal itself) stays held.
-    _journal: File,
+/// The journal file and its lock, held while it is read and rewritten.
+struct LockedJournal {
+    /// Read handle; the fallback lock is held on it when no lock file exists.
+    file: File,
     /// The lock file beside the journal, if one could be created.
     _lock: Option<File>,
-    bytes: Vec<u8>,
-    lines: Vec<Line>,
 }
 
 /// `$XDG_STATE_HOME/renameant/journal.jsonl`, default
@@ -184,7 +181,13 @@ pub fn default_path() -> io::Result<PathBuf> {
 /// must lock the journal file itself.
 fn lock_file(path: &Path, operation: FlockOperation) -> io::Result<Option<File>> {
     let lock_path = path.with_extension("lock");
-    let lock = match OpenOptions::new().create(true).read(true).write(true).open(&lock_path) {
+    let lock = match OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .mode(0o600)
+        .open(&lock_path)
+    {
         Ok(lock) => lock,
         Err(_) => return Ok(None),
     };
@@ -199,9 +202,10 @@ fn lock_file(path: &Path, operation: FlockOperation) -> io::Result<Option<File>>
 /// rules. `None` means another instance already holds it.
 pub fn lock_instance(path: &Path) -> io::Result<Option<File>> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(parent)?;
     }
-    let file = OpenOptions::new().create(true).read(true).write(true).open(path)?;
+    let file =
+        OpenOptions::new().create(true).read(true).write(true).mode(0o600).open(path)?;
     match flock(&file, FlockOperation::NonBlockingLockExclusive) {
         Ok(()) => Ok(Some(file)),
         Err(Errno::WOULDBLOCK) => Ok(None),
@@ -220,6 +224,8 @@ pub struct Journal {
     /// The lock beside the journal. `None` when the journal file itself had to
     /// be locked; the lock is then held by `file`.
     _lock: Option<File>,
+    /// Bytes in the file, so a failed append can be truncated away.
+    len: u64,
     /// Records written, and how many of them are on disk.
     written: usize,
     /// Rename records written by this run, staged halves included.
@@ -248,20 +254,31 @@ impl Journal {
     /// in is ever at risk.
     pub fn open_syncing(path: PathBuf, sync_every: usize) -> io::Result<Journal> {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+            std::fs::DirBuilder::new().recursive(true).mode(0o700).create(parent)?;
         }
         // One writer per journal: hold an exclusive lock for the whole run so
         // two processes cannot read the same next run id and both append it.
         // The lock file stays put when the journal is rewritten. Released when
         // this `Journal` drops.
         let lock = lock_file(&path, FlockOperation::LockExclusive)?;
-        let file = OpenOptions::new().create(true).append(true).open(&path)?;
+        let mut file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .append(true)
+            .mode(0o600)
+            .open(&path)?;
         if lock.is_none() {
             flock(&file, FlockOperation::LockExclusive)?;
         }
+        // A crash or a short write can leave half a record at the end. Drop it
+        // before anything appends to it; otherwise the next record would turn
+        // the truncated tail into a corrupt line in the middle.
+        truncate_partial_tail(&mut file)?;
+        let len = file.metadata()?.len();
         Ok(Journal {
             file,
             _lock: lock,
+            len,
             written: 0,
             renames: 0,
             synced: 0,
@@ -270,12 +287,20 @@ impl Journal {
     }
 
     /// Appends one record, `fsync`ing it when it closes a batch. A failure here
-    /// aborts the run.
+    /// aborts the run, and a partial write is truncated back so the journal
+    /// stays readable.
     pub fn append(&mut self, record: &JournalRecord) -> io::Result<()> {
         let mut line = serde_json::to_string(record)?;
         line.push('\n');
-        self.file.write_all(line.as_bytes())?;
-        self.file.flush()?;
+        if let Err(error) = self.file.write_all(line.as_bytes()) {
+            let _ = self.file.set_len(self.len);
+            return Err(error);
+        }
+        if let Err(error) = self.file.flush() {
+            let _ = self.file.set_len(self.len);
+            return Err(error);
+        }
+        self.len += line.len() as u64;
         self.written += 1;
         if matches!(record, JournalRecord::Rename { .. }) {
             self.renames += 1;
@@ -304,7 +329,8 @@ impl Journal {
 
     /// Reads the journal line by line, handing each complete line to `on_line`.
     /// A missing file is an empty journal. A truncated final line is what a crash
-    /// mid-append leaves behind, so it ends the read without failing.
+    /// mid-append leaves behind, so it ends the read without failing and is
+    /// never parsed; every reader applies the same rule.
     fn for_each_line(
         path: &Path,
         mut on_line: impl FnMut(&str) -> io::Result<()>,
@@ -316,41 +342,40 @@ impl Journal {
         };
 
         let mut reader = BufReader::new(file);
-        let mut line = String::new();
-        loop {
-            line.clear();
-            if reader.read_line(&mut line)? == 0 {
-                return Ok(());
-            }
-            let text = line.trim_end_matches('\n');
-            if line.ends_with('\n') {
-                on_line(text)?;
-            } else {
-                let _ = on_line(text);
-                return Ok(());
-            }
-        }
+        for_each_complete_line(&mut reader, |line| {
+            let text = std::str::from_utf8(line).map_err(invalid_line)?;
+            on_line(text)?;
+            Ok(false)
+        })
     }
 
-    /// Next free run id: one past the highest `begin` in the journal. Only the
-    /// run metadata is parsed, never a path. A corrupt line is an error, so a
-    /// bad journal is not appended to.
+    /// Next free run id: one past the last `begin` in the journal. Runs are
+    /// appended in order, so the last `begin` carries the highest id; only the
+    /// tail is read, never the whole journal. The startup prune reads every line,
+    /// so a corrupt older run is still reported there.
     pub fn next_run_id(path: &Path) -> io::Result<RunId> {
-        let mut highest = 0;
-        Journal::for_each_line(path, |line| {
-            let meta = parse_meta(line)?;
+        let mut file = match File::open(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(1),
+            Err(error) => return Err(error),
+        };
+        let mut last = 0;
+        for_each_line_backward(&mut file, |line| {
+            let meta = parse_meta(std::str::from_utf8(line).map_err(invalid_line)?)?;
             if meta.record == RecordKind::Begin {
-                highest = highest.max(meta.run);
+                last = meta.run;
+                return Ok(true);
             }
-            Ok(())
+            Ok(false)
         })?;
-        Ok(highest + 1)
+        Ok(last + 1)
     }
 
     /// Reads the journal. A missing file is an empty journal. A truncated final
     /// line is what a crash mid-append leaves behind, so it ends the read; any
     /// other unparseable line is an error rather than a silent drop.
-    pub fn read(path: &Path) -> io::Result<Vec<JournalRecord>> {
+    #[cfg(test)]
+    pub(crate) fn read(path: &Path) -> io::Result<Vec<JournalRecord>> {
         let mut records: Vec<JournalRecord> = Vec::new();
         Journal::for_each_line(path, |line| {
             let record = serde_json::from_str(line).map_err(|error| {
@@ -405,54 +430,63 @@ impl Journal {
     /// an oldest prefix goes, so the highest run id stays in the file and
     /// [`Journal::next_run_id`] can never reuse one.
     ///
-    /// Rewrites through a temporary file, so a crash leaves the old journal
-    /// intact, and refuses a journal with a corrupt line rather than drop what
-    /// it cannot read. The truncated final line a crash leaves is dropped.
-    /// Returns the runs removed.
+    /// Reads the journal line by line and copies the kept suffix through a
+    /// temporary file, so it never holds the whole journal in memory. A crash
+    /// leaves the old journal intact, and a corrupt line refuses the prune
+    /// rather than drop what it cannot read. The truncated final line a crash
+    /// leaves is dropped. Returns the runs removed.
     pub fn prune(path: &Path) -> io::Result<usize> {
-        let locked = match Journal::locked_lines(path) {
-            Ok(Some(found)) => found,
+        let mut locked = match Journal::lock_journal(path) {
+            Ok(Some(locked)) => locked,
             Ok(None) => return Ok(0),
             // Another instance is mid-run. Leave its journal alone; the next
             // start prunes.
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(0),
             Err(error) => return Err(error),
         };
-        let bytes = &locked.bytes;
-        let lines = &locked.lines;
 
-        let newest_run = lines
-            .iter()
-            .filter(|(_, _, meta)| meta.record == RecordKind::Begin)
-            .map(|(_, _, meta)| meta.run)
-            .max();
-        let Some(newest_run) = newest_run else { return Ok(0) };
-
+        // Run ids rise in append order, so the newest run is the highest id and
+        // its `begin` is the earliest line that must survive.
+        let mut begins: Vec<(RunId, u64, u64)> = Vec::new();
+        let mut offset = 0u64;
+        {
+            let mut reader = BufReader::new(&mut locked.file);
+            for_each_complete_line(&mut reader, |line| {
+                let meta = parse_meta(std::str::from_utf8(line).map_err(invalid_line)?)?;
+                if meta.record == RecordKind::Begin {
+                    begins.push((meta.run, meta.at, offset));
+                }
+                offset += line.len() as u64 + 1;
+                Ok(false)
+            })?;
+        }
+        let Some(newest_run) = begins.iter().map(|(run, _, _)| *run).max() else {
+            return Ok(0);
+        };
         let cutoff = now().saturating_sub(RETENTION_DAYS * SECONDS_PER_DAY);
-        let cutoff_run = lines
+        let Some(first_kept) = begins
             .iter()
-            .filter(|(_, _, meta)| meta.record == RecordKind::Begin)
-            .filter(|(_, _, meta)| meta.run == newest_run || meta.at >= cutoff)
-            .map(|(_, _, meta)| meta.run)
+            .filter(|(run, at, _)| *run == newest_run || *at >= cutoff)
+            .map(|(_, _, offset)| *offset)
             .min()
-            .unwrap_or(newest_run);
-
-        let Some(first_kept) = lines.iter().position(|(_, _, meta)| meta.run >= cutoff_run) else {
+        else {
             return Ok(0);
         };
         if first_kept == 0 {
             return Ok(0);
         }
-        let dropped = lines[..first_kept]
-            .iter()
-            .filter(|(_, _, meta)| meta.record == RecordKind::Begin)
-            .count();
+        let dropped = begins.iter().filter(|(_, _, offset)| *offset < first_kept).count();
 
-        Journal::rewrite(
-            path,
-            bytes,
-            lines[first_kept..].iter().map(|(start, end, _)| (*start, *end)),
-        )?;
+        locked.file.seek(SeekFrom::Start(first_kept))?;
+        let mut reader = BufReader::new(&mut locked.file);
+        Journal::rewrite_temp(path, |out| {
+            for_each_complete_line(&mut reader, |line| {
+                out.write_all(line)?;
+                out.write_all(b"\n")?;
+                Ok(false)
+            })?;
+            Ok(true)
+        })?;
         Ok(dropped)
     }
 
@@ -466,23 +500,27 @@ impl Journal {
         if runs.is_empty() {
             return Ok(0);
         }
-        let Some(locked) = Journal::locked_lines(path)? else { return Ok(0) };
-        let bytes = &locked.bytes;
-        let lines = &locked.lines;
-        let kept: Vec<(usize, usize)> = lines
-            .iter()
-            .filter(|(_, _, meta)| !runs.contains(&meta.run))
-            .map(|(start, end, _)| (*start, *end))
-            .collect();
-        if kept.len() == lines.len() {
-            return Ok(0);
-        }
-        Journal::rewrite(path, bytes, kept.into_iter())?;
-        let removed = lines
-            .iter()
-            .filter(|(_, _, meta)| meta.record == RecordKind::Begin && runs.contains(&meta.run))
-            .count();
-        Ok(removed)
+        let Some(mut locked) = Journal::lock_journal(path)? else { return Ok(0) };
+        let mut removed = 0usize;
+        let mut changed = false;
+        Journal::rewrite_temp(path, |out| {
+            let mut reader = BufReader::new(&mut locked.file);
+            for_each_complete_line(&mut reader, |line| {
+                let meta = parse_meta(std::str::from_utf8(line).map_err(invalid_line)?)?;
+                if runs.contains(&meta.run) {
+                    changed = true;
+                    if meta.record == RecordKind::Begin {
+                        removed += 1;
+                    }
+                } else {
+                    out.write_all(line)?;
+                    out.write_all(b"\n")?;
+                }
+                Ok(false)
+            })?;
+            Ok(changed)
+        })?;
+        Ok(if changed { removed } else { 0 })
     }
 
     /// Empties the journal, keeping the file so its permissions stay. Every
@@ -509,12 +547,12 @@ impl Journal {
         Ok(())
     }
 
-    /// Opens the journal, takes its lock and parses every complete line. The
-    /// returned value holds the lock for as long as it lives. `None` when the
-    /// journal does not exist yet.
-    fn locked_lines(path: &Path) -> io::Result<Option<Locked>> {
+    /// Opens the journal and takes its non-blocking lock, returning `None` when
+    /// the journal does not exist. The returned value holds the lock for as long
+    /// as it lives.
+    fn lock_journal(path: &Path) -> io::Result<Option<LockedJournal>> {
         let lock = lock_file(path, FlockOperation::NonBlockingLockExclusive)?;
-        let mut file = match OpenOptions::new().read(true).open(path) {
+        let file = match OpenOptions::new().read(true).open(path) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error),
@@ -529,46 +567,51 @@ impl Journal {
                 result => result?,
             }
         }
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)?;
-
-        // Line ranges, so a rewrite copies the original bytes instead of
-        // re-encoding paths. Anything after the last newline is the truncated
-        // line a crash leaves, and is left out.
-        let mut lines: Vec<Line> = Vec::new();
-        let mut offset = 0;
-        while let Some(at) = bytes[offset..].iter().position(|&byte| byte == b'\n') {
-            let end = offset + at + 1;
-            let text = std::str::from_utf8(&bytes[offset..end - 1]).map_err(invalid_line)?;
-            lines.push((offset, end, parse_meta(text)?));
-            offset = end;
-        }
-        Ok(Some(Locked { _journal: file, _lock: lock, bytes, lines }))
+        Ok(Some(LockedJournal { file, _lock: lock }))
     }
 
-    /// Writes `ranges` of `bytes` to a temporary file and renames it over `path`,
-    /// so a crash leaves the old journal intact.
-    fn rewrite(
+    /// Writes a temporary journal and renames it over `path`, so a crash leaves
+    /// the old one intact. `write` returns whether to commit; `false` removes
+    /// the temporary file. The original file's mode is kept.
+    fn rewrite_temp(
         path: &Path,
-        bytes: &[u8],
-        ranges: impl Iterator<Item = (usize, usize)>,
-    ) -> io::Result<()> {
+        write: impl FnOnce(&mut File) -> io::Result<bool>,
+    ) -> io::Result<bool> {
         let temp = path.with_extension("jsonl.tmp");
-        let mut out = File::create(&temp)?;
-        let result: io::Result<()> = (|| {
-            for (start, end) in ranges {
-                out.write_all(&bytes[start..end])?;
+        // Removing a stale temp first also unlinks a planted symlink; creating
+        // with `create_new` then never follows one.
+        let _ = std::fs::remove_file(&temp);
+        let mut out =
+            OpenOptions::new().write(true).create_new(true).mode(0o600).open(&temp)?;
+        let result = match write(&mut out) {
+            Ok(false) => Ok(false),
+            Ok(true) => {
+                out.flush()?;
+                let mode = std::fs::metadata(path)?.permissions();
+                out.set_permissions(mode)?;
+                fsync(&out)?;
+                Ok(true)
             }
-            out.flush()?;
-            fsync(&out)?;
-            Ok(())
-        })();
+            Err(error) => Err(error),
+        };
         drop(out);
-        if let Err(error) = result.and_then(|()| std::fs::rename(&temp, path)) {
-            let _ = std::fs::remove_file(&temp);
-            return Err(error);
+        match result {
+            Ok(true) => {
+                if let Err(error) = std::fs::rename(&temp, path) {
+                    let _ = std::fs::remove_file(&temp);
+                    return Err(error);
+                }
+                Ok(true)
+            }
+            Ok(false) => {
+                let _ = std::fs::remove_file(&temp);
+                Ok(false)
+            }
+            Err(error) => {
+                let _ = std::fs::remove_file(&temp);
+                Err(error)
+            }
         }
-        Ok(())
     }
 
     /// The completed renames of one run, in the order they happened.
@@ -592,52 +635,9 @@ impl Journal {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(error) => return Err(error),
         };
-        let end = file.metadata()?.len();
-        let trailing_partial = trailing_partial(&mut file, end)?;
 
         let mut renames: Vec<RecordedRename> = Vec::new();
-        // Bytes of the leading, not-yet-complete line carried over from the
-        // later chunk in the previous step.
-        let mut pending: Vec<u8> = Vec::new();
-        let mut first_line = true;
-        let mut pos = end;
-        'outer: loop {
-            let chunk_start = pos.saturating_sub(TAIL_CHUNK as u64);
-            let mut buffer = vec![0u8; (pos - chunk_start) as usize];
-            file.seek(SeekFrom::Start(chunk_start))?;
-            file.read_exact(&mut buffer)?;
-            buffer.extend_from_slice(&pending);
-
-            let mut line_end = buffer.len();
-            while line_end > 0 {
-                let newline = buffer[..line_end].iter().rposition(|&byte| byte == b'\n');
-                let line_start = newline.map_or(0, |at| at + 1);
-                if newline.is_none() && chunk_start > 0 {
-                    // The line starts before this chunk: carry the fragment into
-                    // the next, earlier read.
-                    pending = buffer[line_start..line_end].to_vec();
-                    break;
-                }
-                let line = &buffer[line_start..line_end];
-                if !line.is_empty() {
-                    let is_partial = first_line && trailing_partial;
-                    first_line = false;
-                    match Journal::tail_line(line, run, &mut renames) {
-                        Ok(true) => break 'outer,
-                        Ok(false) => {}
-                        Err(_) if is_partial => {}
-                        Err(error) => return Err(error),
-                    }
-                }
-                line_end = newline.unwrap_or(0);
-            }
-
-            if chunk_start == 0 {
-                break;
-            }
-            pos = chunk_start;
-        }
-
+        for_each_line_backward(&mut file, |line| Journal::tail_line(line, run, &mut renames))?;
         renames.reverse();
         Ok(renames)
     }
@@ -663,6 +663,114 @@ impl Journal {
         }
         Ok(false)
     }
+}
+
+/// Truncates a journal that does not end in a newline back to its last complete
+/// line, so a short write or a crash cannot leave a fragment that the next
+/// append turns into a corrupt middle line.
+fn truncate_partial_tail(file: &mut File) -> io::Result<()> {
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Ok(());
+    }
+    let len = metadata.len();
+    if len == 0 {
+        return Ok(());
+    }
+
+    let mut last = [0u8; 1];
+    file.seek(SeekFrom::Start(len - 1))?;
+    file.read_exact(&mut last)?;
+    if last[0] == b'\n' {
+        return Ok(());
+    }
+
+    let mut buffer = vec![0u8; TAIL_CHUNK];
+    let mut end = len;
+    while end > 0 {
+        let start = end.saturating_sub(TAIL_CHUNK as u64);
+        let size = (end - start) as usize;
+        file.seek(SeekFrom::Start(start))?;
+        file.read_exact(&mut buffer[..size])?;
+        if let Some(at) = buffer[..size].iter().rposition(|&byte| byte == b'\n') {
+            file.set_len(start + at as u64 + 1)?;
+            return Ok(());
+        }
+        end = start;
+    }
+    file.set_len(0)?;
+    Ok(())
+}
+
+/// Calls `on_line` for each line that ends in a newline, from the start. A
+/// truncated final line is skipped. Returns early when `on_line` returns `true`.
+fn for_each_complete_line(
+    reader: &mut impl BufRead,
+    mut on_line: impl FnMut(&[u8]) -> io::Result<bool>,
+) -> io::Result<()> {
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        if reader.read_until(b'\n', &mut line)? == 0 {
+            return Ok(());
+        }
+        if line.last() != Some(&b'\n') {
+            return Ok(());
+        }
+        if on_line(&line[..line.len() - 1])? {
+            return Ok(());
+        }
+    }
+}
+
+/// Calls `on_line` for each complete line, last to first. A truncated final
+/// line is skipped. Returns early when `on_line` returns `true`.
+fn for_each_line_backward(
+    file: &mut File,
+    mut on_line: impl FnMut(&[u8]) -> io::Result<bool>,
+) -> io::Result<()> {
+    let end = file.metadata()?.len();
+    let trailing_partial = trailing_partial(file, end)?;
+
+    // Bytes of the leading, not-yet-complete line carried over from the later
+    // chunk in the previous step.
+    let mut pending: Vec<u8> = Vec::new();
+    let mut first_line = true;
+    let mut pos = end;
+    'outer: loop {
+        let chunk_start = pos.saturating_sub(TAIL_CHUNK as u64);
+        let mut buffer = vec![0u8; (pos - chunk_start) as usize];
+        file.seek(SeekFrom::Start(chunk_start))?;
+        file.read_exact(&mut buffer)?;
+        buffer.extend_from_slice(&pending);
+
+        let mut line_end = buffer.len();
+        while line_end > 0 {
+            let newline = buffer[..line_end].iter().rposition(|&byte| byte == b'\n');
+            let line_start = newline.map_or(0, |at| at + 1);
+            if newline.is_none() && chunk_start > 0 {
+                // The line starts before this chunk: carry the fragment into
+                // the next, earlier read.
+                pending = buffer[line_start..line_end].to_vec();
+                break;
+            }
+            let line = &buffer[line_start..line_end];
+            if !line.is_empty() {
+                let skip = first_line && trailing_partial;
+                first_line = false;
+                if !skip && on_line(line)? {
+                    break 'outer;
+                }
+            }
+            line_end = newline.unwrap_or(0);
+        }
+
+        if chunk_start == 0 {
+            break;
+        }
+        pos = chunk_start;
+    }
+    Ok(())
 }
 
 /// Whether the file ends in the half-line a crash leaves. Seeks the reader to
@@ -753,6 +861,62 @@ mod tests {
         drop(file);
 
         assert_eq!(Journal::read(&path).expect("read").len(), 1);
+    }
+
+    #[test]
+    fn a_partial_line_is_dropped_before_the_next_append() {
+        let (_temp, path) = temp_journal();
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+        let mut begin = serde_json::to_string(&JournalRecord::Begin {
+            run: 1,
+            at: 0,
+            planned: 1,
+            overwrite: false,
+            undo_of: None,
+        })
+        .expect("json");
+        begin.push('\n');
+        let mut bytes = begin.into_bytes();
+        bytes.extend_from_slice(b"{\"record\":\"rename\",\"run\":1,\"from\":\"a");
+        std::fs::write(&path, bytes).expect("write");
+
+        let mut journal = Journal::open(path.clone()).expect("open");
+        begin(&mut journal, 2, 0);
+        drop(journal);
+
+        let text = std::fs::read_to_string(&path).expect("read");
+        assert!(text.ends_with('\n'), "the repaired journal ends with a newline");
+        assert!(!text.contains("\"record\":\"rename\""), "the partial line is gone");
+        let sessions = Journal::sessions(&path).expect("sessions");
+        assert_eq!(sessions.iter().map(|session| session.run).collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(Journal::next_run_id(&path).expect("next"), 3);
+    }
+
+    #[test]
+    fn a_complete_record_without_a_newline_is_not_read() {
+        let (_temp, path) = temp_journal();
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+        let begin = serde_json::to_string(&JournalRecord::Begin {
+            run: 1,
+            at: 0,
+            planned: 1,
+            overwrite: false,
+            undo_of: None,
+        })
+        .expect("json");
+        let rename_line =
+            serde_json::to_string(&rename(1, PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")))
+                .expect("json");
+        std::fs::write(&path, format!("{begin}\n{rename_line}")).expect("write");
+
+        // No trailing newline means the record is incomplete; every reader
+        // skips it rather than trusting a partly written line.
+        assert_eq!(Journal::read(&path).expect("read").len(), 1);
+        let sessions = Journal::sessions(&path).expect("sessions");
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].renames, 0);
+        assert!(Journal::renames(&path, 1).expect("renames").is_empty());
+        assert_eq!(Journal::next_run_id(&path).expect("next"), 2);
     }
 
     #[test]
@@ -927,6 +1091,28 @@ mod tests {
         // unchanged and the next id cannot repeat one.
         assert_eq!(Journal::next_run_id(&path).expect("next"), 3);
         assert_eq!(Journal::renames(&path, 2).expect("renames").len(), 1);
+    }
+
+    #[test]
+    fn prune_keeps_the_journals_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (_temp, path) = temp_journal();
+        let mut journal = Journal::open(path.clone()).expect("open");
+        begin(&mut journal, 1, now() - 61 * SECONDS_PER_DAY);
+        end(&mut journal, 1);
+        begin(&mut journal, 2, now());
+        end(&mut journal, 2);
+        drop(journal);
+
+        let mode =
+            |path: &Path| std::fs::metadata(path).expect("metadata").permissions().mode() & 0o777;
+        assert_eq!(mode(&path), 0o600, "a new journal is private");
+        // A rewrite must keep whatever the user set, not recreate the default.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640))
+            .expect("chmod");
+        assert_eq!(Journal::prune(&path).expect("prune"), 1);
+        assert_eq!(mode(&path), 0o640);
     }
 
     #[test]
