@@ -122,7 +122,6 @@ fn card(
             edit.enabled = !edit.enabled;
         }
         crate::style::pointer(ui.add(egui::Checkbox::without_text(&mut edit.enabled)))
-            .on_hover_text("turn this rule on or off")
             .accessible_name(name(index, "enabled"));
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
