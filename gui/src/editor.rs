@@ -194,107 +194,107 @@ fn label(ui: &mut Ui, text: &str) {
 }
 
 fn fields(ui: &mut Ui, index: usize, edit: &mut RuleEdit) {
-    // An off rule reads as dimmed through its widget text, not only its border.
-    if !edit.enabled {
-        ui.visuals_mut().override_text_color = Some(OFF);
-    }
-    ui.horizontal_wrapped(|ui| {
-        if !matches!(edit.kind, RuleKind::Number | RuleKind::Date) {
-            target_combo(ui, index, edit);
-        }
-        match edit.kind {
-            RuleKind::Replace => {
-                crate::style::pointer(ui.checkbox(&mut edit.regex, "regex"));
-                label(ui, if edit.regex { "pattern" } else { "find" });
-                crate::style::field(ui, &mut edit.value, FIELD_WIDTH)
-                    .accessible_name(name(index, "find"));
-                label(ui, "replace");
-                crate::style::field(ui, &mut edit.replacement, FIELD_WIDTH)
-                    .accessible_name(name(index, "replace"));
+    // An off rule reads as dimmed and its fields are inert until it is back on.
+    ui.add_enabled_ui(edit.enabled, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            if !matches!(edit.kind, RuleKind::Number | RuleKind::Date) {
+                target_combo(ui, index, edit);
             }
-            RuleKind::Remove => {
-                label(ui, "from");
-                ui.add(DragValue::new(&mut edit.remove_start).range(0..=MAX_COUNT))
-                    .accessible_name(name(index, "from character"));
-                label(ui, "to");
-                ui.add(DragValue::new(&mut edit.remove_end).range(0..=MAX_COUNT))
-                    .accessible_name(name(index, "to character"));
-            }
-            RuleKind::Trim => {
-                ui.add(DragValue::new(&mut edit.count).range(0..=MAX_COUNT))
-                    .accessible_name(name(index, "characters"));
-                label(ui, "characters from the end");
-            }
-            RuleKind::Insert => {
-                crate::style::pointer(
-                    egui::ComboBox::from_id_salt(("insert", index))
-                        .selected_text(edit.insert.label())
-                        .show_ui(ui, |ui| {
-                            for op in InsertKind::ALL {
-                                ui.selectable_value(&mut edit.insert, op, op.label());
-                            }
-                        })
-                        .response,
-                )
-                .accessible_name(name(index, "where"));
-                crate::style::field(ui, &mut edit.value, FIELD_WIDTH)
-                    .accessible_name(name(index, "text"));
-                if edit.insert == InsertKind::Position {
-                    label(ui, "at");
-                    ui.add(DragValue::new(&mut edit.at).range(0..=MAX_COUNT))
-                        .accessible_name(name(index, "position"));
+            match edit.kind {
+                RuleKind::Replace => {
+                    crate::style::pointer(ui.checkbox(&mut edit.regex, "regex"));
+                    label(ui, if edit.regex { "pattern" } else { "find" });
+                    crate::style::field(ui, &mut edit.value, FIELD_WIDTH)
+                        .accessible_name(name(index, "find"));
+                    label(ui, "replace");
+                    crate::style::field(ui, &mut edit.replacement, FIELD_WIDTH)
+                        .accessible_name(name(index, "replace"));
+                }
+                RuleKind::Remove => {
+                    label(ui, "from");
+                    ui.add(DragValue::new(&mut edit.remove_start).range(0..=MAX_COUNT))
+                        .accessible_name(name(index, "from character"));
+                    label(ui, "to");
+                    ui.add(DragValue::new(&mut edit.remove_end).range(0..=MAX_COUNT))
+                        .accessible_name(name(index, "to character"));
+                }
+                RuleKind::Trim => {
+                    ui.add(DragValue::new(&mut edit.count).range(0..=MAX_COUNT))
+                        .accessible_name(name(index, "characters"));
+                    label(ui, "characters from the end");
+                }
+                RuleKind::Insert => {
+                    crate::style::pointer(
+                        egui::ComboBox::from_id_salt(("insert", index))
+                            .selected_text(edit.insert.label())
+                            .show_ui(ui, |ui| {
+                                for op in InsertKind::ALL {
+                                    ui.selectable_value(&mut edit.insert, op, op.label());
+                                }
+                            })
+                            .response,
+                    )
+                    .accessible_name(name(index, "where"));
+                    crate::style::field(ui, &mut edit.value, FIELD_WIDTH)
+                        .accessible_name(name(index, "text"));
+                    if edit.insert == InsertKind::Position {
+                        label(ui, "at");
+                        ui.add(DragValue::new(&mut edit.at).range(0..=MAX_COUNT))
+                            .accessible_name(name(index, "position"));
+                    }
+                }
+                RuleKind::Number => {
+                    place_combo(ui, index, edit);
+                    label(ui, "start");
+                    ui.add(DragValue::new(&mut edit.start))
+                        .accessible_name(name(index, "start"));
+                    label(ui, "step");
+                    ui.add(DragValue::new(&mut edit.step).range(1..=MAX_STEP))
+                        .accessible_name(name(index, "step"));
+                    label(ui, "digits");
+                    ui.add(DragValue::new(&mut edit.pad).range(1..=MAX_PAD))
+                        .accessible_name(name(index, "digits"));
+                }
+                RuleKind::Date => {
+                    place_combo(ui, index, edit);
+                    crate::style::pointer(
+                        egui::ComboBox::from_id_salt(("date format", index))
+                            .selected_text(date_format_label(edit.date_format))
+                            .show_ui(ui, |ui| {
+                                for format in DATE_FORMATS {
+                                    ui.selectable_value(
+                                        &mut edit.date_format,
+                                        format,
+                                        date_format_label(format),
+                                    );
+                                }
+                            })
+                            .response,
+                    )
+                    .accessible_name(name(index, "format"));
+                }
+                RuleKind::Case => {
+                    crate::style::pointer(
+                        egui::ComboBox::from_id_salt(("case", index))
+                            .selected_text(case_label(edit.case))
+                            .show_ui(ui, |ui| {
+                                for style in CASE_STYLES {
+                                    ui.selectable_value(&mut edit.case, style, case_label(style));
+                                }
+                            })
+                            .response,
+                    )
+                    .accessible_name(name(index, "style"));
+                }
+                RuleKind::Normalize => {
+                    for (at, (_, label)) in NORMALIZE_OPS.iter().enumerate() {
+                        crate::style::pointer(ui.checkbox(&mut edit.normalize[at], *label));
+                    }
                 }
             }
-            RuleKind::Number => {
-                place_combo(ui, index, edit);
-                label(ui, "start");
-                ui.add(DragValue::new(&mut edit.start)).accessible_name(name(index, "start"));
-                label(ui, "step");
-                ui.add(DragValue::new(&mut edit.step).range(1..=MAX_STEP))
-                    .accessible_name(name(index, "step"));
-                label(ui, "digits");
-                ui.add(DragValue::new(&mut edit.pad).range(1..=MAX_PAD))
-                    .accessible_name(name(index, "digits"));
-            }
-            RuleKind::Date => {
-                place_combo(ui, index, edit);
-                crate::style::pointer(
-                    egui::ComboBox::from_id_salt(("date format", index))
-                        .selected_text(date_format_label(edit.date_format))
-                        .show_ui(ui, |ui| {
-                            for format in DATE_FORMATS {
-                                ui.selectable_value(
-                                    &mut edit.date_format,
-                                    format,
-                                    date_format_label(format),
-                                );
-                            }
-                        })
-                        .response,
-                )
-                .accessible_name(name(index, "format"));
-            }
-            RuleKind::Case => {
-                crate::style::pointer(
-                    egui::ComboBox::from_id_salt(("case", index))
-                        .selected_text(case_label(edit.case))
-                        .show_ui(ui, |ui| {
-                            for style in CASE_STYLES {
-                                ui.selectable_value(&mut edit.case, style, case_label(style));
-                            }
-                        })
-                        .response,
-                )
-                .accessible_name(name(index, "style"));
-            }
-            RuleKind::Normalize => {
-                for (at, (_, label)) in NORMALIZE_OPS.iter().enumerate() {
-                    crate::style::pointer(ui.checkbox(&mut edit.normalize[at], *label));
-                }
-            }
-        }
+        });
+        hint(ui, edit);
     });
-    hint(ui, edit);
 }
 
 /// The where-combo shared by every rule that generates text.
