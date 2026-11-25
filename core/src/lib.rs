@@ -19,7 +19,9 @@ pub use apply::{
     ApplyError, ApplyOptions, ApplyReport, ApplyRow, Outcome, apply, is_staged, undo, undo_one,
 };
 pub use filter::{CompiledFilter, Filter, FilterError, KindFilter};
-pub use journal::{Journal, JournalRecord, RunId, RunOutcome, Session};
+pub use journal::{
+    FileId, Journal, JournalRecord, RecordedRename, RunId, RunOutcome, Session, lock_instance,
+};
 pub use osname::{NAME_MAX, PATH_MAX};
 pub use plan::{ConflictKind, InvalidKind, Plan, PlanRow, Status};
 pub use rule::{

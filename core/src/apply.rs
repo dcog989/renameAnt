@@ -6,17 +6,17 @@ use std::path::{Path, PathBuf};
 
 use rustix::fs::{CWD, RenameFlags, renameat_with};
 use rustix::io::Errno;
-use serde::{Serialize, Serializer};
 
-use crate::journal::{BATCHED_SYNC_EVERY, Journal, JournalRecord, RunId, RunOutcome, now};
+use crate::journal::{
+    BATCHED_SYNC_EVERY, FileId, Journal, JournalRecord, RecordedRename, RunId, RunOutcome, now,
+};
 use crate::plan::{Plan, Status};
 
 /// Generated names to try before giving up on staging a cycle.
 const TEMP_ATTEMPTS: u32 = 32;
 const TEMP_PREFIX: &str = ".renameant-tmp";
 
-#[derive(Debug, thiserror::Error, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, thiserror::Error)]
 pub enum ApplyError {
     #[error("the destination already exists")]
     TargetExists,
@@ -26,21 +26,16 @@ pub enum ApplyError {
     ReadOnlyFs,
     #[error("the name is too long")]
     NameTooLong,
+    #[error("renameAnt needs absolute paths, so undo does not depend on the working directory")]
+    RelativePath,
+    #[error("the file is not the one the run renamed")]
+    FileChanged,
     #[error(
         "this filesystem rejected RENAME_NOREPLACE, and renameAnt never falls back to a rename that could overwrite"
     )]
     NotSupported,
     #[error(transparent)]
-    Io(
-        #[serde(serialize_with = "io_message")]
-        #[from]
-        io::Error,
-    ),
-}
-
-/// `--json` gets the io error as its message, since `io::Error` is not `Serialize`.
-fn io_message<S: Serializer>(error: &io::Error, serializer: S) -> Result<S::Ok, S::Error> {
-    serializer.serialize_str(&error.to_string())
+    Io(#[from] io::Error),
 }
 
 impl From<Errno> for ApplyError {
@@ -69,8 +64,7 @@ impl From<Errno> for ApplyError {
     }
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug)]
 pub enum Outcome {
     Renamed,
     /// Never attempted: a `Conflict` or `Invalid` row, a row the run
@@ -89,18 +83,21 @@ impl fmt::Display for Outcome {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
 pub struct ApplyRow {
-    #[serde(with = "crate::bytes_serde::path")]
     pub src: PathBuf,
-    #[serde(with = "crate::bytes_serde::path")]
     pub dst: PathBuf,
     pub outcome: Outcome,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
 pub struct ApplyReport {
     pub run: RunId,
+    /// When the run's `end` record was written.
+    pub at: u64,
+    /// Rename records the run wrote, staged halves included. This is what the
+    /// journal's session count will show.
+    pub records: usize,
     pub rows: Vec<ApplyRow>,
     /// The run stopped early on `NotSupported`. Completed renames are
     /// kept; there is no rollback.
@@ -225,6 +222,7 @@ pub fn apply(plan: &Plan, options: &ApplyOptions) -> io::Result<ApplyReport> {
                 .take_while(|row| row.status == Status::Ok && row.via_temp)
                 .count();
         let mut staged: Vec<(usize, PathBuf)> = Vec::with_capacity(end - at);
+        let mut stage_failed = false;
         for (offset, row) in plan.rows[at..end].iter().enumerate() {
             let index = at + offset;
             match stage(&row.src, run, index, &mut journal)? {
@@ -233,9 +231,26 @@ pub fn apply(plan: &Plan, options: &ApplyOptions) -> io::Result<ApplyReport> {
                         aborted = true;
                     }
                     rows[index].outcome = Outcome::Failed(error);
+                    stage_failed = true;
+                    break;
                 }
                 Ok(temp) => staged.push((index, temp)),
             }
+        }
+        if stage_failed {
+            // One member failing leaves the others with no destination: landing
+            // them would leave files under generated names. Put every staged
+            // name back and skip the run.
+            for (index, temp) in staged.iter().rev() {
+                let outcome =
+                    rename(temp, &plan.rows[*index].src, false, &mut journal, run)?;
+                rows[*index].outcome = match outcome {
+                    Ok(()) => Outcome::Skipped,
+                    Err(error) => Outcome::Failed(error),
+                };
+            }
+            at = end;
+            continue;
         }
         for (index, temp) in staged.iter().rev() {
             let outcome =
@@ -248,8 +263,8 @@ pub fn apply(plan: &Plan, options: &ApplyOptions) -> io::Result<ApplyReport> {
         at = end;
     }
 
-    let report = ApplyReport { run, rows, aborted };
-    journal.append(&JournalRecord::End { run, at: now(), outcome: report.outcome() })?;
+    let report = ApplyReport { run, at: now(), records: journal.renames_written(), rows, aborted };
+    journal.append(&JournalRecord::End { run, at: report.at, outcome: report.outcome() })?;
     journal.sync()?;
     Ok(report)
 }
@@ -264,7 +279,7 @@ pub fn undo(options: &ApplyOptions, target: RunId) -> io::Result<ApplyReport> {
     // Lock before reading: the lock is held for the whole undo, so a concurrent
     // apply cannot claim this undo's run id.
     let journal = Journal::open_syncing(options.journal.clone(), options.sync_every())?;
-    let mut completed = Journal::renames(&options.journal, target)?;
+    let mut completed = Journal::renames_with_id(&options.journal, target)?;
     completed.reverse();
     reverse(options, journal, target, completed)
 }
@@ -280,14 +295,14 @@ pub fn undo_one(
     to: &Path,
 ) -> io::Result<ApplyReport> {
     let journal = Journal::open_syncing(options.journal.clone(), options.sync_every())?;
-    let recorded = Journal::renames(&options.journal, target)?
+    let recorded = Journal::renames_with_id(&options.journal, target)?
         .into_iter()
-        .any(|(row_from, row_to)| row_from.as_path() == from && row_to.as_path() == to);
-    if !recorded {
+        .find(|record| record.from.as_path() == from && record.to.as_path() == to);
+    let Some(record) = recorded else {
         let message = format!("run {target} did not rename {} to {}", from.display(), to.display());
         return Err(io::Error::new(io::ErrorKind::InvalidInput, message));
-    }
-    reverse(options, journal, target, vec![(from.to_path_buf(), to.to_path_buf())])
+    };
+    reverse(options, journal, target, vec![record])
 }
 
 /// Appends a run that reverses `completed` in order. The caller holds the lock
@@ -296,7 +311,7 @@ fn reverse(
     options: &ApplyOptions,
     mut journal: Journal,
     target: RunId,
-    completed: Vec<(PathBuf, PathBuf)>,
+    completed: Vec<RecordedRename>,
 ) -> io::Result<ApplyReport> {
     let run = Journal::next_run_id(&options.journal)?;
     journal.append(&JournalRecord::Begin {
@@ -309,13 +324,21 @@ fn reverse(
     journal.sync()?;
 
     let mut rows = Vec::with_capacity(completed.len());
-    for (from, to) in &completed {
-        let outcome = rename(to, from, false, &mut journal, run)?;
-        rows.push(ApplyRow { src: to.clone(), dst: from.clone(), outcome: as_outcome(outcome) });
+    for record in &completed {
+        let outcome = match record.id {
+            Some(id) if FileId::of(&record.to) != Some(id) => Ok(Err(ApplyError::FileChanged)),
+            _ => rename(&record.to, &record.from, false, &mut journal, run)?,
+        };
+        rows.push(ApplyRow {
+            src: record.to.clone(),
+            dst: record.from.clone(),
+            outcome: as_outcome(outcome),
+        });
     }
 
-    let report = ApplyReport { run, rows, aborted: false };
-    journal.append(&JournalRecord::End { run, at: now(), outcome: report.outcome() })?;
+    let report =
+        ApplyReport { run, at: now(), records: journal.renames_written(), rows, aborted: false };
+    journal.append(&JournalRecord::End { run, at: report.at, outcome: report.outcome() })?;
     journal.sync()?;
     Ok(report)
 }
@@ -342,6 +365,11 @@ fn rename(
     journal: &mut Journal,
     run: RunId,
 ) -> RenameResult {
+    // A journal entry is later replayed from another working directory.
+    if !src.is_absolute() || !dst.is_absolute() {
+        return Ok(Err(ApplyError::RelativePath));
+    }
+
     let result = if overwrite {
         rustix::fs::rename(src, dst)
     } else {
@@ -351,11 +379,21 @@ fn rename(
     match result {
         Err(errno) => Ok(Err(ApplyError::from(errno))),
         Ok(()) => {
-            journal.append(&JournalRecord::Rename {
+            let id = FileId::of(dst);
+            if let Err(error) = journal.append(&JournalRecord::Rename {
                 run,
                 from: src.to_path_buf(),
                 to: dst.to_path_buf(),
-            })?;
+                id,
+            }) {
+                // No record, no rename: put the file back when nothing was
+                // clobbered. The overwrite opt-in already made restore
+                // impossible, so it keeps the file at its new name.
+                if !overwrite {
+                    let _ = renameat_with(CWD, dst, CWD, src, RenameFlags::NOREPLACE);
+                }
+                return Err(error);
+            }
             Ok(Ok(()))
         }
     }
@@ -732,6 +770,70 @@ mod tests {
     fn a_staged_name_is_recognized_so_it_is_never_undone_alone() {
         assert!(is_staged(Path::new("/tmp/.renameant-tmp-1-0-0")));
         assert!(!is_staged(Path::new("/tmp/a")));
+    }
+
+    #[test]
+    fn a_rename_whose_record_cannot_be_written_puts_the_file_back() {
+        let full = Path::new("/dev/full");
+        if !full.exists() {
+            eprintln!("/dev/full is absent, so the failing journal cannot be built");
+            return;
+        }
+        let fixture = fixture(&["a"]);
+        let mut journal =
+            Journal::open_syncing(full.to_path_buf(), 1).expect("open /dev/full for writing");
+
+        let result =
+            rename(&fixture.dir.join("a"), &fixture.dir.join("b"), false, &mut journal, 1);
+
+        assert!(result.is_err(), "a record that cannot be written aborts the run");
+        assert!(fixture.exists("a"), "the name is back where it started");
+        assert!(!fixture.exists("b"), "the rename was reversed");
+    }
+
+    #[test]
+    fn undo_refuses_a_destination_that_is_now_a_different_file() {
+        let fixture = fixture(&["a"]);
+        let first = apply(&fixture.plan(prefix("p-")), &fixture.options).expect("apply");
+        let renamed = fixture.dir.join("p-a");
+        // Keep the original inode alive under another name, then put a new file
+        // at the journal's destination.
+        fs::rename(&renamed, fixture.dir.join("old")).expect("move the original");
+        fs::write(&renamed, b"new").expect("replacement");
+
+        let undone = undo(&fixture.options, first.run).expect("undo");
+
+        assert_eq!(undone.failed(), 1);
+        assert_eq!(undone.renamed(), 0);
+        assert!(fixture.exists("p-a"), "the replacement stays where it is");
+        assert_eq!(fs::read(fixture.dir.join("p-a")).expect("read"), b"new");
+        assert!(!fixture.exists("a"), "nothing was moved to the old name");
+    }
+
+    #[test]
+    fn a_failed_stage_puts_the_staged_peers_back() {
+        let fixture = fixture(&["ab", "ba"]);
+        let rules = vec![Rule::Regex {
+            pattern: "^(.+)(.)$".into(),
+            replacement: "${2}${1}".into(),
+            target: Target::Whole,
+            path: false,
+        }];
+        let plan = fixture.plan(rules);
+        // The plan is built, then one source disappears before apply runs.
+        fs::remove_file(fixture.dir.join("ba")).expect("remove the second source");
+
+        let report = apply(&plan, &fixture.options).expect("apply");
+
+        assert_eq!(report.renamed(), 0);
+        assert_eq!(report.failed(), 1);
+        assert!(fixture.exists("ab"), "the staged peer is back at its source");
+        let leftovers: Vec<_> = fs::read_dir(&fixture.dir)
+            .expect("read dir")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with(TEMP_PREFIX))
+            .collect();
+        assert!(leftovers.is_empty(), "no file is left under a generated name");
     }
 
     #[test]

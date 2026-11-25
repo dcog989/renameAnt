@@ -12,6 +12,7 @@
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use rustix::fs::{FlockOperation, flock, fsync};
@@ -30,6 +31,30 @@ const RETENTION_DAYS: u64 = 60;
 const SECONDS_PER_DAY: u64 = 24 * 60 * 60;
 
 pub type RunId = u64;
+
+/// The file a rename moved, as the kernel identifies it. Undo uses it to
+/// refuse a path that now holds a different file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileId {
+    pub dev: u64,
+    pub ino: u64,
+}
+
+impl FileId {
+    pub(crate) fn of(path: &Path) -> Option<FileId> {
+        let meta = std::fs::symlink_metadata(path).ok()?;
+        Some(FileId { dev: meta.dev(), ino: meta.ino() })
+    }
+}
+
+/// One completed rename, with the identity of the file it put at `to`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecordedRename {
+    pub from: PathBuf,
+    pub to: PathBuf,
+    /// `None` for a record written by a version that did not store one.
+    pub id: Option<FileId>,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -64,6 +89,10 @@ pub enum JournalRecord {
         from: PathBuf,
         #[serde(with = "bytes_serde::path")]
         to: PathBuf,
+        /// The file the rename put at `to`, so undo can tell it from a
+        /// replacement. Missing in records written before this field existed.
+        #[serde(default)]
+        id: Option<FileId>,
     },
     End {
         run: RunId,
@@ -109,14 +138,26 @@ struct RecordMeta {
 
 /// A complete journal line: its byte range in the file, and its metadata.
 type Line = (usize, usize, RecordMeta);
-/// The journal's bytes and parsed lines, with its lock held by the file.
-type Locked = (File, Vec<u8>, Vec<Line>);
+
+/// The journal's bytes and parsed lines, with its locks held.
+struct Locked {
+    /// Kept open so a fallback lock (the journal itself) stays held.
+    _journal: File,
+    /// The lock file beside the journal, if one could be created.
+    _lock: Option<File>,
+    bytes: Vec<u8>,
+    lines: Vec<Line>,
+}
 
 /// `$XDG_STATE_HOME/renameant/journal.jsonl`, default
 /// `~/.local/state/renameant/journal.jsonl`.
 pub fn default_path() -> io::Result<PathBuf> {
     let base = match std::env::var_os("XDG_STATE_HOME") {
-        Some(value) if !value.is_empty() => PathBuf::from(value),
+        Some(value)
+            if !value.is_empty() && Path::new(&value).is_absolute() =>
+        {
+            PathBuf::from(value)
+        }
         _ => {
             let home = std::env::var_os("HOME").ok_or_else(|| {
                 io::Error::new(
@@ -124,10 +165,48 @@ pub fn default_path() -> io::Result<PathBuf> {
                     "neither XDG_STATE_HOME nor HOME is set, so the journal has no location",
                 )
             })?;
-            PathBuf::from(home).join(".local").join("state")
+            let home = PathBuf::from(home);
+            if !home.is_absolute() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "HOME is not an absolute path, so the journal has no stable location",
+                ));
+            }
+            home.join(".local").join("state")
         }
     };
     Ok(base.join(STATE_DIR).join(JOURNAL_FILE))
+}
+
+/// Locks a file beside the journal. The journal itself is replaced by prune
+/// and remove, so a lock on it would move to an unlinked inode; this one does
+/// not. `None` means the directory does not allow a lock file, and the caller
+/// must lock the journal file itself.
+fn lock_file(path: &Path, operation: FlockOperation) -> io::Result<Option<File>> {
+    let lock_path = path.with_extension("lock");
+    let lock = match OpenOptions::new().create(true).read(true).write(true).open(&lock_path) {
+        Ok(lock) => lock,
+        Err(_) => return Ok(None),
+    };
+    match flock(&lock, operation) {
+        Ok(()) => Ok(Some(lock)),
+        Err(Errno::WOULDBLOCK) => Err(io::Error::from(io::ErrorKind::WouldBlock)),
+        Err(errno) => Err(errno.into()),
+    }
+}
+
+/// A process-wide lock, so a second window cannot overwrite the first one's
+/// rules. `None` means another instance already holds it.
+pub fn lock_instance(path: &Path) -> io::Result<Option<File>> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let file = OpenOptions::new().create(true).read(true).write(true).open(path)?;
+    match flock(&file, FlockOperation::NonBlockingLockExclusive) {
+        Ok(()) => Ok(Some(file)),
+        Err(Errno::WOULDBLOCK) => Ok(None),
+        Err(errno) => Err(errno.into()),
+    }
 }
 
 pub(crate) fn now() -> u64 {
@@ -138,8 +217,13 @@ pub(crate) fn now() -> u64 {
 
 pub struct Journal {
     file: File,
+    /// The lock beside the journal. `None` when the journal file itself had to
+    /// be locked; the lock is then held by `file`.
+    _lock: Option<File>,
     /// Records written, and how many of them are on disk.
     written: usize,
+    /// Rename records written by this run, staged halves included.
+    renames: usize,
     synced: usize,
     /// Records between two `fsync`s. One is the durable default; fast mode
     /// passes [`BATCHED_SYNC_EVERY`].
@@ -166,12 +250,23 @@ impl Journal {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let file = OpenOptions::new().create(true).append(true).open(&path)?;
         // One writer per journal: hold an exclusive lock for the whole run so
         // two processes cannot read the same next run id and both append it.
-        // Released when this `Journal` drops.
-        flock(&file, FlockOperation::LockExclusive)?;
-        Ok(Journal { file, written: 0, synced: 0, sync_every: sync_every.max(1) })
+        // The lock file stays put when the journal is rewritten. Released when
+        // this `Journal` drops.
+        let lock = lock_file(&path, FlockOperation::LockExclusive)?;
+        let file = OpenOptions::new().create(true).append(true).open(&path)?;
+        if lock.is_none() {
+            flock(&file, FlockOperation::LockExclusive)?;
+        }
+        Ok(Journal {
+            file,
+            _lock: lock,
+            written: 0,
+            renames: 0,
+            synced: 0,
+            sync_every: sync_every.max(1),
+        })
     }
 
     /// Appends one record, `fsync`ing it when it closes a batch. A failure here
@@ -182,6 +277,9 @@ impl Journal {
         self.file.write_all(line.as_bytes())?;
         self.file.flush()?;
         self.written += 1;
+        if matches!(record, JournalRecord::Rename { .. }) {
+            self.renames += 1;
+        }
         if self.written - self.synced >= self.sync_every {
             self.sync()?;
         }
@@ -197,6 +295,11 @@ impl Journal {
         fsync(&self.file)?;
         self.synced = self.written;
         Ok(())
+    }
+
+    /// Rename records written so far, staged halves included.
+    pub(crate) fn renames_written(&self) -> usize {
+        self.renames
     }
 
     /// Reads the journal line by line, handing each complete line to `on_line`.
@@ -230,7 +333,8 @@ impl Journal {
     }
 
     /// Next free run id: one past the highest `begin` in the journal. Only the
-    /// run metadata is parsed, never a path.
+    /// run metadata is parsed, never a path. A corrupt line is an error, so a
+    /// bad journal is not appended to.
     pub fn next_run_id(path: &Path) -> io::Result<RunId> {
         let mut highest = 0;
         Journal::for_each_line(path, |line| {
@@ -306,7 +410,7 @@ impl Journal {
     /// it cannot read. The truncated final line a crash leaves is dropped.
     /// Returns the runs removed.
     pub fn prune(path: &Path) -> io::Result<usize> {
-        let (_lock, bytes, lines) = match Journal::locked_lines(path) {
+        let locked = match Journal::locked_lines(path) {
             Ok(Some(found)) => found,
             Ok(None) => return Ok(0),
             // Another instance is mid-run. Leave its journal alone; the next
@@ -314,6 +418,8 @@ impl Journal {
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(0),
             Err(error) => return Err(error),
         };
+        let bytes = &locked.bytes;
+        let lines = &locked.lines;
 
         let newest_run = lines
             .iter()
@@ -344,7 +450,7 @@ impl Journal {
 
         Journal::rewrite(
             path,
-            &bytes,
+            bytes,
             lines[first_kept..].iter().map(|(start, end, _)| (*start, *end)),
         )?;
         Ok(dropped)
@@ -360,7 +466,9 @@ impl Journal {
         if runs.is_empty() {
             return Ok(0);
         }
-        let Some((_lock, bytes, lines)) = Journal::locked_lines(path)? else { return Ok(0) };
+        let Some(locked) = Journal::locked_lines(path)? else { return Ok(0) };
+        let bytes = &locked.bytes;
+        let lines = &locked.lines;
         let kept: Vec<(usize, usize)> = lines
             .iter()
             .filter(|(_, _, meta)| !runs.contains(&meta.run))
@@ -369,7 +477,7 @@ impl Journal {
         if kept.len() == lines.len() {
             return Ok(0);
         }
-        Journal::rewrite(path, &bytes, kept.into_iter())?;
+        Journal::rewrite(path, bytes, kept.into_iter())?;
         let removed = lines
             .iter()
             .filter(|(_, _, meta)| meta.record == RecordKind::Begin && runs.contains(&meta.run))
@@ -380,14 +488,21 @@ impl Journal {
     /// Empties the journal, keeping the file so its permissions stay. Every
     /// run's undo is lost; the files they renamed are untouched.
     pub fn clear(path: &Path) -> io::Result<()> {
+        // Lock before opening: a rewrite may replace the journal, so an fd
+        // opened first could point at the old inode.
+        let lock = lock_file(path, FlockOperation::NonBlockingLockExclusive)?;
         let file = match OpenOptions::new().write(true).open(path) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
             Err(error) => return Err(error),
         };
-        match flock(&file, FlockOperation::NonBlockingLockExclusive) {
-            Err(Errno::WOULDBLOCK) => return Err(io::Error::from(io::ErrorKind::WouldBlock)),
-            result => result?,
+        if lock.is_none() {
+            match flock(&file, FlockOperation::NonBlockingLockExclusive) {
+                Err(Errno::WOULDBLOCK) => {
+                    return Err(io::Error::from(io::ErrorKind::WouldBlock));
+                }
+                result => result?,
+            }
         }
         file.set_len(0)?;
         fsync(&file)?;
@@ -395,9 +510,10 @@ impl Journal {
     }
 
     /// Opens the journal, takes its lock and parses every complete line. The
-    /// returned `File` holds the lock for as long as it lives. `None` when the
+    /// returned value holds the lock for as long as it lives. `None` when the
     /// journal does not exist yet.
     fn locked_lines(path: &Path) -> io::Result<Option<Locked>> {
+        let lock = lock_file(path, FlockOperation::NonBlockingLockExclusive)?;
         let mut file = match OpenOptions::new().read(true).open(path) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -405,9 +521,13 @@ impl Journal {
         };
         // Nothing may append between the read and the rename that replaces the
         // file.
-        match flock(&file, FlockOperation::NonBlockingLockExclusive) {
-            Err(Errno::WOULDBLOCK) => return Err(io::Error::from(io::ErrorKind::WouldBlock)),
-            result => result?,
+        if lock.is_none() {
+            match flock(&file, FlockOperation::NonBlockingLockExclusive) {
+                Err(Errno::WOULDBLOCK) => {
+                    return Err(io::Error::from(io::ErrorKind::WouldBlock));
+                }
+                result => result?,
+            }
         }
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;
@@ -423,7 +543,7 @@ impl Journal {
             lines.push((offset, end, parse_meta(text)?));
             offset = end;
         }
-        Ok(Some((file, bytes, lines)))
+        Ok(Some(Locked { _journal: file, _lock: lock, bytes, lines }))
     }
 
     /// Writes `ranges` of `bytes` to a temporary file and renames it over `path`,
@@ -458,21 +578,24 @@ impl Journal {
     /// tail read, not the whole journal. `rename` lines for other runs are skipped
     /// after parsing only their metadata, so no unrelated path is ever decoded.
     pub fn renames(path: &Path, run: RunId) -> io::Result<Vec<(PathBuf, PathBuf)>> {
+        Ok(Journal::renames_with_id(path, run)?
+            .into_iter()
+            .map(|record| (record.from, record.to))
+            .collect())
+    }
+
+    /// The same as [`Journal::renames`], with the file identity each record
+    /// stored, so undo can refuse a destination that was replaced.
+    pub fn renames_with_id(path: &Path, run: RunId) -> io::Result<Vec<RecordedRename>> {
         let mut file = match File::open(path) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(error) => return Err(error),
         };
         let end = file.metadata()?.len();
-        let mut trailing_partial = false;
-        if end > 0 {
-            file.seek(SeekFrom::Start(end - 1))?;
-            let mut last = [0u8; 1];
-            file.read_exact(&mut last)?;
-            trailing_partial = last[0] != b'\n';
-        }
+        let trailing_partial = trailing_partial(&mut file, end)?;
 
-        let mut renames: Vec<(PathBuf, PathBuf)> = Vec::new();
+        let mut renames: Vec<RecordedRename> = Vec::new();
         // Bytes of the leading, not-yet-complete line carried over from the
         // later chunk in the previous step.
         let mut pending: Vec<u8> = Vec::new();
@@ -521,7 +644,7 @@ impl Journal {
 
     /// Handles one line read backward. Returns `true` once `run`'s `begin` is
     /// reached, which means every earlier line belongs to another run.
-    fn tail_line(line: &[u8], run: RunId, out: &mut Vec<(PathBuf, PathBuf)>) -> io::Result<bool> {
+    fn tail_line(line: &[u8], run: RunId, out: &mut Vec<RecordedRename>) -> io::Result<bool> {
         let text = std::str::from_utf8(line).map_err(invalid_line)?;
         let meta = parse_meta(text)?;
         if meta.run != run {
@@ -530,16 +653,28 @@ impl Journal {
         match meta.record {
             RecordKind::Begin => return Ok(true),
             RecordKind::Rename => {
-                if let JournalRecord::Rename { from, to, .. } =
+                if let JournalRecord::Rename { from, to, id, .. } =
                     serde_json::from_str::<JournalRecord>(text).map_err(invalid_line)?
                 {
-                    out.push((from, to));
+                    out.push(RecordedRename { from, to, id });
                 }
             }
             RecordKind::End => {}
         }
         Ok(false)
     }
+}
+
+/// Whether the file ends in the half-line a crash leaves. Seeks the reader to
+/// the last byte; the caller seeks where it needs next.
+fn trailing_partial(file: &mut File, end: u64) -> io::Result<bool> {
+    if end == 0 {
+        return Ok(false);
+    }
+    file.seek(SeekFrom::Start(end - 1))?;
+    let mut last = [0u8; 1];
+    file.read_exact(&mut last)?;
+    Ok(last[0] != b'\n')
 }
 
 /// A line that is present but not a record.
@@ -565,7 +700,7 @@ mod tests {
     }
 
     fn rename(run: RunId, from: PathBuf, to: PathBuf) -> JournalRecord {
-        JournalRecord::Rename { run, from, to }
+        JournalRecord::Rename { run, from, to, id: None }
     }
 
     fn begin(journal: &mut Journal, run: RunId, at: u64) {
@@ -679,7 +814,7 @@ mod tests {
     fn the_journal_holds_an_exclusive_lock() {
         let (_temp, path) = temp_journal();
         let held = Journal::open(path.clone()).expect("open");
-        let other = File::open(&path).expect("second handle");
+        let other = File::open(path.with_extension("lock")).expect("second handle");
         assert!(
             flock(&other, FlockOperation::NonBlockingLockExclusive).is_err(),
             "a held journal must refuse a second lock"
@@ -689,6 +824,16 @@ mod tests {
             flock(&other, FlockOperation::NonBlockingLockExclusive).is_ok(),
             "the lock is released with the Journal"
         );
+    }
+
+    #[test]
+    fn the_instance_lock_refuses_a_second_holder() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = temp.path().join("state").join("instance.lock");
+        let held = lock_instance(&path).expect("lock").expect("the first holder");
+        assert!(lock_instance(&path).expect("second lock").is_none(), "a second instance is refused");
+        drop(held);
+        assert!(lock_instance(&path).expect("third lock").is_some(), "the lock is released");
     }
 
     #[test]
@@ -728,6 +873,9 @@ mod tests {
             ]
         );
         assert_eq!(Journal::renames(&path, 2000).expect("renames").len(), 1);
+        // Only run 1 wrote a `begin`; the later records belong to runs the test
+        // never started.
+        assert_eq!(Journal::next_run_id(&path).expect("next"), 2);
     }
 
     #[test]
