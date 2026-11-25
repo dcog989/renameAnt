@@ -24,27 +24,19 @@ fn main() -> eframe::Result {
     desktop_integration::install();
     // One window: two instances would overwrite each other's rule list, and the
     // journal is easier to reason about with one writer.
-    let _instance = match renameant_core::journal::default_path() {
-        Ok(journal) => {
-            match renameant_core::journal::lock_instance(&journal.with_file_name("instance.lock")) {
-                Ok(Some(lock)) => Some(lock),
-                Ok(None) => {
-                    rfd::MessageDialog::new()
-                        .set_level(rfd::MessageLevel::Warning)
-                        .set_title("renameAnt")
-                        .set_description("renameAnt is already running.")
-                        .show();
-                    return Ok(());
-                }
-                Err(error) => {
-                    eprintln!("renameAnt: the instance lock failed: {error}");
-                    None
-                }
-            }
-        }
+    let journal = match renameant_core::journal::default_path() {
+        Ok(journal) => journal,
         Err(error) => {
-            eprintln!("renameAnt: the journal location is unknown: {error}");
-            None
+            return quit(&format!("renameAnt could not find its state directory:\n{error}"));
+        }
+    };
+    let _instance = match renameant_core::journal::lock_instance(
+        &journal.with_file_name("instance.lock"),
+    ) {
+        Ok(Some(lock)) => lock,
+        Ok(None) => return quit("renameAnt is already running."),
+        Err(error) => {
+            return quit(&format!("renameAnt could not lock its state directory:\n{error}"));
         }
     };
     let options = eframe::NativeOptions {
@@ -59,4 +51,14 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     eframe::run_native("renameAnt", options, Box::new(|cc| Ok(Box::new(app::App::new(cc)))))
+}
+
+/// Shows a startup problem and exits without opening a window.
+fn quit(message: &str) -> eframe::Result {
+    rfd::MessageDialog::new()
+        .set_level(rfd::MessageLevel::Warning)
+        .set_title("renameAnt")
+        .set_description(message)
+        .show();
+    Ok(())
 }
