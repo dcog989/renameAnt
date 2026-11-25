@@ -371,7 +371,7 @@ fn hint(ui: &mut Ui, edit: &RuleEdit) {
         RuleKind::Insert if edit.insert == InsertKind::Position => {
             "the position counts characters, so UTF-8 names only"
         }
-        RuleKind::Number => "numbered in name order, not in this table's order",
+        RuleKind::Number => "source path order; filtering or removing a row renumbers the rest",
         RuleKind::Date => "today's date, the same for every row in this preview",
         _ => return,
     };

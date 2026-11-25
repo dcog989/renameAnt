@@ -41,7 +41,7 @@ Linux file / directory bulk renamer GUI. Provides fast and safe renaming with mu
 - **Subdirectories** scans the whole tree instead of one directory's children. Renames run bottom-up, so a child still has a valid path when its parent is renamed.
 - **Filter** includes only the kinds you tick — directories, files (a symlink counts as a file) — and optionally a name pattern, plain text or regex. The pattern ignores case unless **case sensitive** is ticked. Filtered-out names stay taken.
 - Click a header — Path, New Name, Size or Modified — to sort by that column, and click it again to reverse. **apply order** puts the rows back to the order Apply runs them in.
-- **Remove** (✕ or the row menu) takes a row out of the preview and the apply count; the file stays where it is. The removal lasts until that path leaves the picked tree.
+- **Remove** (✕ or the row menu) takes a row out of the preview and the apply count; the file stays where it is. Removing or filtering a row renumbers a Number rule. The removal lasts until that path leaves the picked tree.
 - **Fast mode** skips reading sizes and modification times until you sort by Size or Modified, and batches the journal's sync instead of writing one per rename. A crash mid-run can then leave the last renames of that run without an undo record; the renames themselves are unaffected.
 - **Apply** performs the previewed plan; undo lives in the same panel.
 - **Journal** lists past runs newest or oldest first; **✕** removes one run and **Clear all** empties it. That deletes undo records only — the files stay where they are.
