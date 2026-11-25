@@ -770,8 +770,8 @@ mod tests {
         };
         assert_eq!((at("ab") as i64 - at("ba") as i64).abs(), 1);
         assert_eq!((at("cd") as i64 - at("dc") as i64).abs(), 1);
-        let first = ["ab", "ba", "cd", "dc"].iter().map(|&name| at(name)).min().unwrap();
-        let last = ["ab", "ba", "cd", "dc"].iter().map(|&name| at(name)).max().unwrap();
+        let first = ["ab", "ba", "cd", "dc"].into_iter().map(at).min().unwrap();
+        let last = ["ab", "ba", "cd", "dc"].into_iter().map(at).max().unwrap();
         assert_eq!(last - first, 3, "all four rows are one staged block");
     }
 

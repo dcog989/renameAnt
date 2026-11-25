@@ -183,6 +183,7 @@ fn lock_file(path: &Path, operation: FlockOperation) -> io::Result<Option<File>>
     let lock_path = path.with_extension("lock");
     let lock = match OpenOptions::new()
         .create(true)
+        .truncate(false)
         .read(true)
         .write(true)
         .mode(0o600)
@@ -204,8 +205,13 @@ pub fn lock_instance(path: &Path) -> io::Result<Option<File>> {
     if let Some(parent) = path.parent() {
         std::fs::DirBuilder::new().recursive(true).mode(0o700).create(parent)?;
     }
-    let file =
-        OpenOptions::new().create(true).read(true).write(true).mode(0o600).open(path)?;
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .mode(0o600)
+        .open(path)?;
     match flock(&file, FlockOperation::NonBlockingLockExclusive) {
         Ok(()) => Ok(Some(file)),
         Err(Errno::WOULDBLOCK) => Ok(None),
