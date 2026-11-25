@@ -35,7 +35,7 @@ pub(crate) fn resolve(rows: &mut [PlanRow], index: &DirIndex) {
     // that `mark_target_exists` marks is settled afterwards by
     // `propagate_blocked`, which spreads that mark up the chain.
     let sources = sources_of(rows, &status, &targets.by_name);
-    mark_target_exists(&mut status, &targets, &sources, &dirs);
+    mark_target_exists(rows, &mut status, &targets, &sources, &dirs);
     let blocker = blockers(rows, &status, &targets, &sources);
     propagate_blocked(&mut status, &blocker);
 
@@ -193,6 +193,7 @@ fn mark_collisions(status: &mut [Status], targets: &mut Targets<'_>) {
 /// The scan's names for a directory and that directory's destinations are both
 /// sorted, so they are walked together rather than looked up one by one.
 fn mark_target_exists(
+    rows: &[PlanRow],
     status: &mut [Status],
     targets: &Targets<'_>,
     sources: &[Destination<'_>],
@@ -205,6 +206,12 @@ fn mark_target_exists(
         let end = at + targets.by_name[at..].iter().take_while(|it| it.dir == dir).count();
         let mut names = dirs.names(dir).map(|names| names.iter());
         let mut present = names.as_mut().and_then(Iterator::next);
+        // The same names folded to ASCII lower case: a case-insensitive mount
+        // treats them as one. A rename that only changes case is staged, so it
+        // is not a collision with its own source.
+        let folded: Option<BTreeSet<Vec<u8>>> = dirs.names(dir).map(|names| {
+            names.iter().map(|name| name.as_bytes().to_ascii_lowercase()).collect()
+        });
 
         for target in &targets.by_name[at..end] {
             while matches!(present, Some(name) if name.as_os_str() < target.name) {
@@ -216,8 +223,24 @@ fn mark_target_exists(
             }
             let on_disk = matches!(present, Some(name) if name.as_os_str() == target.name);
             let vacated = matches!(sources.get(source), Some(source) if Destination::compare(source, target) == Ordering::Equal);
-            if status[target.row] == Status::Ok && on_disk && !vacated {
+            if status[target.row] != Status::Ok {
+                continue;
+            }
+            if on_disk && !vacated {
                 status[target.row] = Status::Conflict(ConflictKind::TargetExists);
+                continue;
+            }
+            let case_only = osname::is_case_only(
+                file_name_of(&rows[target.row].src).as_bytes(),
+                target.name.as_bytes(),
+            );
+            let folded_taken = !on_disk
+                && !case_only
+                && folded
+                    .as_ref()
+                    .is_some_and(|names| names.contains(&target.name.as_bytes().to_ascii_lowercase()));
+            if folded_taken {
+                status[target.row] = Status::Conflict(ConflictKind::CaseOnly);
             }
         }
         at = end;
@@ -671,6 +694,29 @@ mod tests {
         assert_eq!(status_of("a.txt"), Status::Conflict(ConflictKind::DuplicateTarget));
         assert_eq!(status_of("b.txt"), Status::Conflict(ConflictKind::DuplicateTarget));
         assert_eq!(status_of("c.txt"), Status::Ok);
+    }
+
+    #[test]
+    fn a_destination_that_differs_only_by_case_from_an_existing_name_is_a_conflict() {
+        let temp = tempfile::tempdir().unwrap();
+        write(temp.path(), &["foo.txt", "bar.txt"]);
+
+        // bar.txt -> FOO.txt, while foo.txt stays. A case-insensitive mount
+        // would see FOO.txt as taken; the preview now says so too.
+        let rows = plan_dir(
+            temp.path(),
+            vec![Rule::Literal {
+                find: b"bar".to_vec(),
+                replace: b"FOO".to_vec(),
+                target: Target::Stem,
+            }],
+        );
+
+        let status_of = |name: &str| {
+            rows.iter().find(|row| file_name_of(&row.src) == OsStr::new(name)).unwrap().status
+        };
+        assert_eq!(status_of("bar.txt"), Status::Conflict(ConflictKind::CaseOnly));
+        assert_eq!(status_of("foo.txt"), Status::Unchanged);
     }
 
     #[test]

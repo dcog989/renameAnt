@@ -94,6 +94,9 @@ pub fn validate(name: &[u8], path_len: usize) -> Option<InvalidKind> {
     if name.is_empty() {
         return Some(InvalidKind::Empty);
     }
+    if name == b"." || name == b".." {
+        return Some(InvalidKind::IllegalChar);
+    }
     if name.iter().any(|byte| *byte == b'/' || *byte == 0) {
         return Some(InvalidKind::IllegalChar);
     }
@@ -169,6 +172,8 @@ mod tests {
     #[test]
     fn validation_rejects_empty_separators_and_overlong_names() {
         assert_eq!(validate(b"", 1), Some(InvalidKind::Empty));
+        assert_eq!(validate(b".", 1), Some(InvalidKind::IllegalChar));
+        assert_eq!(validate(b"..", 2), Some(InvalidKind::IllegalChar));
         assert_eq!(validate(b"a/b", 3), Some(InvalidKind::IllegalChar));
         assert_eq!(validate(b"a\0b", 3), Some(InvalidKind::IllegalChar));
         assert_eq!(validate(&[b'a'; NAME_MAX + 1], 0), Some(InvalidKind::NameTooLong));
