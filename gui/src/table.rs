@@ -111,13 +111,15 @@ pub fn show(ui: &mut egui::Ui, model: &mut PlanModel) -> Change {
                 });
             });
         table.body(|mut body| {
-            // `rows` consumes the body, so keep its painter for the row fills: a
-            // cell's own painter is clipped to the cell, which would leave the
-            // gaps between columns unpainted. The clip is grown by half a row
-            // gap so the first row's band reaches into the gap above it.
+            // Grow the body's own clip by half a row gap, so the first row's
+            // band reaches into the gap above it instead of being cut short:
+            // egui_extras paints the stripes with this clip, not a cell's.
             let spacing_y = body.ui_mut().spacing().item_spacing.y;
-            let mut painter = body.ui_mut().painter().clone();
-            painter.set_clip_rect(painter.clip_rect().expand2(egui::vec2(0.0, spacing_y / 2.0)));
+            let clip = body.ui_mut().clip_rect().expand2(egui::vec2(0.0, spacing_y / 2.0));
+            body.ui_mut().set_clip_rect(clip);
+            // `rows` consumes the body; keep its painter for the row fills so a
+            // cell's own clip does not leave the gaps between columns unpainted.
+            let painter = body.ui_mut().painter().clone();
             body.rows(ROW_HEIGHT, view_len, |mut row| {
                 let at = row.index();
                 let plan_index = model.view[at];
