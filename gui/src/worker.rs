@@ -27,6 +27,10 @@ pub enum Job {
     Undo(ApplyOptions, RunId),
     /// One recorded rename of a run: `(from, to)` as the run wrote it.
     UndoOne(ApplyOptions, RunId, PathBuf, PathBuf),
+    /// Drops these runs from the journal. An empty list would be a no-op.
+    Forget(PathBuf, Vec<RunId>),
+    /// Empties the journal.
+    Clear(PathBuf),
 }
 
 /// What the file browser is asked for. It opens on a thread of its own, so the
@@ -58,6 +62,11 @@ pub enum Done {
         result: io::Result<ApplyReport>,
         /// The journal as it stands after the run, so the history does not need
         /// a second round trip.
+        sessions: Vec<Session>,
+    },
+    /// Runs removed from the journal, or the journal cleared.
+    Forgotten {
+        result: io::Result<()>,
         sessions: Vec<Session>,
     },
 }
@@ -129,6 +138,13 @@ fn serve(jobs: Receiver<Job>, done: Sender<Done>) {
                 let result = apply::undo_one(&options, run, &from, &to);
                 Done::Ran { undo_of: Some(run), sessions: sessions_of(&options), result }
             }
+            Job::Forget(path, runs) => Done::Forgotten {
+                result: Journal::remove_runs(&path, &runs).map(|_| ()),
+                sessions: sessions_at(&path),
+            },
+            Job::Clear(path) => {
+                Done::Forgotten { result: Journal::clear(&path), sessions: sessions_at(&path) }
+            }
         };
         if done.send(message).is_err() {
             return;
@@ -146,5 +162,9 @@ fn file_meta(path: &Path) -> Option<FileMeta> {
 
 /// A journal that cannot be read is an empty history, not a lost run.
 fn sessions_of(options: &ApplyOptions) -> Vec<Session> {
-    Journal::sessions(&options.journal).unwrap_or_default()
+    sessions_at(&options.journal)
+}
+
+fn sessions_at(path: &Path) -> Vec<Session> {
+    Journal::sessions(path).unwrap_or_default()
 }

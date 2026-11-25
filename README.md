@@ -44,6 +44,7 @@ Linux file / directory bulk renamer GUI. Provides fast and safe renaming with mu
 - **Skip** leaves a row untouched and out of the apply count.
 - **Fast mode** skips reading sizes and modification times until you sort by Size or Modified, and batches the journal's sync instead of writing one per rename. A crash mid-run can then leave the last renames of that run without an undo record; the renames themselves are unaffected.
 - **Apply** performs the previewed plan; undo lives in the same panel.
+- **Journal** lists past runs newest or oldest first; **✕** removes one run and **Clear all** empties it. That deletes undo records only — the files stay where they are.
 
 ## Technical
 

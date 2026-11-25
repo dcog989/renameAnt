@@ -28,6 +28,8 @@ pub enum Choice {
     Apply,
     UndoRun(RunId),
     UndoRow { run: RunId, from: PathBuf, to: PathBuf },
+    Remove(RunId),
+    ClearAll,
     Close,
 }
 
@@ -89,6 +91,25 @@ pub fn confirm_undo_row(ui: &mut Ui, run: RunId, from: &Path, to: &Path) -> Choi
         .on_hover_text(format!("{} → {}", to.display(), from.display()));
     ui.label("This reverses that one rename. Every other row of the run stays as it is.");
     buttons(ui, "Undo", Choice::UndoRow { run, from: from.to_path_buf(), to: to.to_path_buf() })
+}
+
+/// Dropping one run from the journal: the files stay where the run put them.
+pub fn confirm_remove(ui: &mut Ui, session: &Session) -> Choice {
+    let (run, renames) = (session.run, session.renames);
+    ui.heading(format!("Remove run {run} from the journal"));
+    ui.label(format!(
+        "Its {renames} renames stay as they are on disk, but this run can no longer be undone."
+    ));
+    buttons(ui, "Remove", Choice::Remove(run))
+}
+
+/// Emptying the journal: every run's undo goes, the files do not move.
+pub fn confirm_clear(ui: &mut Ui, runs: usize) -> Choice {
+    ui.heading("Clear the journal");
+    ui.label(format!(
+        "All {runs} runs are removed. Files stay as they are, and nothing in the journal can be undone afterward."
+    ));
+    buttons(ui, "Clear all", Choice::ClearAll)
 }
 
 pub fn show_report(ui: &mut Ui, title: &str, report: &ApplyReport, rest: usize) -> Choice {

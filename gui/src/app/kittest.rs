@@ -72,6 +72,8 @@ fn overlay_name(app: &App) -> &'static str {
         Some(Overlay::ConfirmApply) => "confirm-apply",
         Some(Overlay::ConfirmUndo(_)) => "confirm-undo",
         Some(Overlay::ConfirmUndoRow { .. }) => "confirm-undo-row",
+        Some(Overlay::ConfirmRemove(_)) => "confirm-remove",
+        Some(Overlay::ConfirmClear) => "confirm-clear",
         Some(Overlay::Report { .. }) => "report",
     }
 }

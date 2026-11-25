@@ -57,6 +57,8 @@ enum Overlay {
         from: PathBuf,
         to: PathBuf,
     },
+    ConfirmRemove(Session),
+    ConfirmClear,
     Report {
         title: String,
         report: ApplyReport,
@@ -324,6 +326,16 @@ impl App {
         self.dispatch(Job::UndoOne(options, run, from, to));
     }
 
+    fn start_remove(&mut self, run: RunId) {
+        self.status = format!("removing run {run} from the journal…");
+        self.dispatch(Job::Forget(self.journal.clone(), vec![run]));
+    }
+
+    fn start_clear(&mut self) {
+        self.status = "clearing the journal…".to_owned();
+        self.dispatch(Job::Clear(self.journal.clone()));
+    }
+
     fn poll(&mut self, ctx: &egui::Context) {
         while let Some(done) = self.worker.try_recv() {
             self.outstanding = self.outstanding.saturating_sub(1);
@@ -376,6 +388,20 @@ impl App {
                     // The names on disk have changed, so the preview is stale.
                     self.scan();
                 }
+                Done::Forgotten { result, sessions } => match result {
+                    Ok(()) => {
+                        self.sessions = sessions;
+                        self.history.forget_all();
+                        self.status = if self.sessions.is_empty() {
+                            "journal cleared".to_owned()
+                        } else {
+                            "journal updated".to_owned()
+                        };
+                    }
+                    Err(error) => {
+                        self.status = format!("the journal could not be changed: {error}");
+                    }
+                },
             }
         }
         if self.busy {
@@ -548,14 +574,18 @@ impl App {
             if self.sessions.is_empty() {
                 logo::paint(ui, &self.logo);
             }
-            if let Some(undo) =
+            if let Some(action) =
                 history::show(ui, &self.sessions, self.busy, &self.journal, &mut self.history)
             {
-                self.overlay = Some(match undo {
-                    history::Undo::Run(session) => Overlay::ConfirmUndo(session),
-                    history::Undo::Row { run, from, to } => {
+                self.overlay = Some(match action {
+                    history::Action::Undo(history::Undo::Run(session)) => {
+                        Overlay::ConfirmUndo(session)
+                    }
+                    history::Action::Undo(history::Undo::Row { run, from, to }) => {
                         Overlay::ConfirmUndoRow { run, from, to }
                     }
+                    history::Action::Remove(session) => Overlay::ConfirmRemove(session),
+                    history::Action::ClearAll => Overlay::ConfirmClear,
                 });
             }
         });
@@ -602,6 +632,8 @@ impl App {
                 Overlay::ConfirmUndoRow { run, from, to } => {
                     dialogs::confirm_undo_row(ui, *run, from, to)
                 }
+                Overlay::ConfirmRemove(session) => dialogs::confirm_remove(ui, session),
+                Overlay::ConfirmClear => dialogs::confirm_clear(ui, self.sessions.len()),
                 Overlay::Report { title, report, rest } => {
                     dialogs::show_report(ui, title, report, *rest)
                 }
@@ -611,6 +643,8 @@ impl App {
                 Choice::Apply => self.start_apply(),
                 Choice::UndoRun(run) => self.start_undo(run),
                 Choice::UndoRow { run, from, to } => self.start_undo_row(run, from, to),
+                Choice::Remove(run) => self.start_remove(run),
+                Choice::ClearAll => self.start_clear(),
                 Choice::Close => keep = false,
             }
         });

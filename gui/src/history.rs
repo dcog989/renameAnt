@@ -25,40 +25,75 @@ pub enum Undo {
     Row { run: RunId, from: PathBuf, to: PathBuf },
 }
 
-/// The runs the user opened, and the renames each showed.
+/// What the panel asks the app to do. Every variant changes the journal, so the
+/// caller owns the confirmation.
+pub enum Action {
+    Undo(Undo),
+    Remove(Session),
+    ClearAll,
+}
+
+/// The runs the user opened, the renames each showed, and the list's order.
 #[derive(Default)]
 pub struct History {
     open: HashSet<RunId>,
     renames: HashMap<RunId, Result<Vec<(PathBuf, PathBuf)>, String>>,
+    oldest_first: bool,
 }
 
-/// Draws the list, and returns the run or row the user asked to undo. The
-/// caller owns the confirmation: nothing is reversed from here.
+impl History {
+    /// Drops every cached read after the journal changed under the list.
+    pub fn forget_all(&mut self) {
+        self.open.clear();
+        self.renames.clear();
+    }
+}
+
+/// Draws the list, and returns the action the user asked for. The caller owns
+/// the confirmation: nothing is changed from here.
 pub fn show(
     ui: &mut Ui,
     sessions: &[Session],
     busy: bool,
     journal: &Path,
     history: &mut History,
-) -> Option<Undo> {
+) -> Option<Action> {
     if sessions.is_empty() {
         ui.label("Nothing has been renamed yet.");
         return None;
     }
+
+    let mut action = None;
+    ui.horizontal(|ui| {
+        let label = if history.oldest_first { "Oldest first" } else { "Newest first" };
+        if ui.button(label).on_hover_text("switch the journal's order").clicked() {
+            history.oldest_first = !history.oldest_first;
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.add_enabled(!busy, egui::Button::new("Clear all")).clicked() {
+                action = Some(Action::ClearAll);
+            }
+        });
+    });
+    ui.separator();
 
     // shortcut: a row's reversal is read from the undo run that recorded its
     // inverse, so a second undo of an undo is not tracked. It would only mis-mark
     // a row after a redo, so upgrade when redo gets its own command.
     let reversed = reversed_rows(sessions, journal, history);
 
-    let mut undo = None;
+    let mut order: Vec<&Session> = sessions.iter().collect();
+    if !history.oldest_first {
+        order.reverse();
+    }
+
     egui::ScrollArea::vertical().auto_shrink([false, true]).show(ui, |ui| {
-        for session in sessions.iter().rev() {
+        for session in order {
             let expanded = history.open.contains(&session.run);
             ui.horizontal(|ui| {
                 let enabled = session.renames > 0 && !busy;
                 if ui.add_enabled(enabled, egui::Button::new("Undo")).clicked() {
-                    undo = Some(Undo::Run(session.clone()));
+                    action = Some(Action::Undo(Undo::Run(session.clone())));
                 }
                 let toggle = ui
                     .add(
@@ -83,6 +118,16 @@ pub fn show(
                 }
                 ui.monospace(format::local_text(session.at));
                 ui.label(format!("{} renames", session.renames));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add_enabled(!busy, egui::Button::new("✕").small())
+                        .on_hover_text("delete this run from the journal; its undo is lost")
+                        .accessible_name(format!("remove run {} from the journal", session.run))
+                        .clicked()
+                    {
+                        action = Some(Action::Remove(session.clone()));
+                    }
+                });
             });
             let mut marks: Vec<String> = Vec::new();
             if let Some(evidence) = reversed.get(&session.run)
@@ -106,12 +151,12 @@ pub fn show(
                 && let Some(row) =
                     detail(ui, journal, history, session, reversed.get(&session.run), busy)
             {
-                undo = Some(row);
+                action = Some(Action::Undo(row));
             }
             ui.separator();
         }
     });
-    undo
+    action
 }
 
 /// The rows a later undo run reversed, per target run.

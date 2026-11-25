@@ -107,6 +107,11 @@ struct RecordMeta {
     undo_of: Option<RunId>,
 }
 
+/// A complete journal line: its byte range in the file, and its metadata.
+type Line = (usize, usize, RecordMeta);
+/// The journal's bytes and parsed lines, with its lock held by the file.
+type Locked = (File, Vec<u8>, Vec<Line>);
+
 /// `$XDG_STATE_HOME/renameant/journal.jsonl`, default
 /// `~/.local/state/renameant/journal.jsonl`.
 pub fn default_path() -> io::Result<PathBuf> {
@@ -301,34 +306,14 @@ impl Journal {
     /// it cannot read. The truncated final line a crash leaves is dropped.
     /// Returns the runs removed.
     pub fn prune(path: &Path) -> io::Result<usize> {
-        let mut file = match OpenOptions::new().read(true).open(path) {
-            Ok(file) => file,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(0),
-            Err(error) => return Err(error),
-        };
-        // Nothing may append between the read and the rename that replaces the
-        // file. The lock lives on the old inode; that is enough because this
-        // runs at startup, before the journal is opened for a run.
-        match flock(&file, FlockOperation::NonBlockingLockExclusive) {
+        let (_lock, bytes, lines) = match Journal::locked_lines(path) {
+            Ok(Some(found)) => found,
+            Ok(None) => return Ok(0),
             // Another instance is mid-run. Leave its journal alone; the next
             // start prunes.
-            Err(Errno::WOULDBLOCK) => return Ok(0),
-            result => result?,
-        }
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)?;
-
-        // Line ranges, so the rewrite copies the original bytes instead of
-        // re-encoding paths. Anything after the last newline is the truncated
-        // line a crash leaves, and is dropped.
-        let mut lines: Vec<(usize, usize, RecordMeta)> = Vec::new();
-        let mut offset = 0;
-        while let Some(at) = bytes[offset..].iter().position(|&byte| byte == b'\n') {
-            let end = offset + at + 1;
-            let text = std::str::from_utf8(&bytes[offset..end - 1]).map_err(invalid_line)?;
-            lines.push((offset, end, parse_meta(text)?));
-            offset = end;
-        }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(0),
+            Err(error) => return Err(error),
+        };
 
         let newest_run = lines
             .iter()
@@ -357,20 +342,113 @@ impl Journal {
             .filter(|(_, _, meta)| meta.record == RecordKind::Begin)
             .count();
 
+        Journal::rewrite(
+            path,
+            &bytes,
+            lines[first_kept..].iter().map(|(start, end, _)| (*start, *end)),
+        )?;
+        Ok(dropped)
+    }
+
+    /// Removes `runs` and every record of them, leaving the other runs undoable.
+    /// The files they renamed are untouched.
+    ///
+    /// Only whole lines go, and no surviving record can name a newer run, so a
+    /// run id is reused only when the removed run was the newest — which nothing
+    /// pointed at. Returns the runs removed.
+    pub fn remove_runs(path: &Path, runs: &[RunId]) -> io::Result<usize> {
+        if runs.is_empty() {
+            return Ok(0);
+        }
+        let Some((_lock, bytes, lines)) = Journal::locked_lines(path)? else { return Ok(0) };
+        let kept: Vec<(usize, usize)> = lines
+            .iter()
+            .filter(|(_, _, meta)| !runs.contains(&meta.run))
+            .map(|(start, end, _)| (*start, *end))
+            .collect();
+        if kept.len() == lines.len() {
+            return Ok(0);
+        }
+        Journal::rewrite(path, &bytes, kept.into_iter())?;
+        let removed = lines
+            .iter()
+            .filter(|(_, _, meta)| meta.record == RecordKind::Begin && runs.contains(&meta.run))
+            .count();
+        Ok(removed)
+    }
+
+    /// Empties the journal, keeping the file so its permissions stay. Every
+    /// run's undo is lost; the files they renamed are untouched.
+    pub fn clear(path: &Path) -> io::Result<()> {
+        let file = match OpenOptions::new().write(true).open(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        match flock(&file, FlockOperation::NonBlockingLockExclusive) {
+            Err(Errno::WOULDBLOCK) => return Err(io::Error::from(io::ErrorKind::WouldBlock)),
+            result => result?,
+        }
+        file.set_len(0)?;
+        fsync(&file)?;
+        Ok(())
+    }
+
+    /// Opens the journal, takes its lock and parses every complete line. The
+    /// returned `File` holds the lock for as long as it lives. `None` when the
+    /// journal does not exist yet.
+    fn locked_lines(path: &Path) -> io::Result<Option<Locked>> {
+        let mut file = match OpenOptions::new().read(true).open(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        // Nothing may append between the read and the rename that replaces the
+        // file.
+        match flock(&file, FlockOperation::NonBlockingLockExclusive) {
+            Err(Errno::WOULDBLOCK) => return Err(io::Error::from(io::ErrorKind::WouldBlock)),
+            result => result?,
+        }
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+
+        // Line ranges, so a rewrite copies the original bytes instead of
+        // re-encoding paths. Anything after the last newline is the truncated
+        // line a crash leaves, and is left out.
+        let mut lines: Vec<Line> = Vec::new();
+        let mut offset = 0;
+        while let Some(at) = bytes[offset..].iter().position(|&byte| byte == b'\n') {
+            let end = offset + at + 1;
+            let text = std::str::from_utf8(&bytes[offset..end - 1]).map_err(invalid_line)?;
+            lines.push((offset, end, parse_meta(text)?));
+            offset = end;
+        }
+        Ok(Some((file, bytes, lines)))
+    }
+
+    /// Writes `ranges` of `bytes` to a temporary file and renames it over `path`,
+    /// so a crash leaves the old journal intact.
+    fn rewrite(
+        path: &Path,
+        bytes: &[u8],
+        ranges: impl Iterator<Item = (usize, usize)>,
+    ) -> io::Result<()> {
         let temp = path.with_extension("jsonl.tmp");
         let mut out = File::create(&temp)?;
-        // Up to the last complete line: the truncated tail is not copied.
-        let end = lines.last().map_or(0, |(_, end, _)| *end);
-        let result = out.write_all(&bytes[lines[first_kept].0..end]).and_then(|()| {
+        let result: io::Result<()> = (|| {
+            for (start, end) in ranges {
+                out.write_all(&bytes[start..end])?;
+            }
             out.flush()?;
-            Ok(fsync(&out)?)
-        });
+            fsync(&out)?;
+            Ok(())
+        })();
         drop(out);
         if let Err(error) = result.and_then(|()| std::fs::rename(&temp, path)) {
             let _ = std::fs::remove_file(&temp);
             return Err(error);
         }
-        Ok(dropped)
+        Ok(())
     }
 
     /// The completed renames of one run, in the order they happened.
@@ -767,5 +845,69 @@ mod tests {
         assert_eq!(Journal::prune(&path).expect("prune"), 1);
         assert!(std::fs::read(&path).expect("read").ends_with(b"\n"));
         assert_eq!(Journal::sessions(&path).expect("sessions").len(), 1);
+    }
+
+    #[test]
+    fn removing_a_run_keeps_the_others_and_the_ids_rising() {
+        let (_temp, path) = temp_journal();
+        let mut journal = Journal::open(path.clone()).expect("open");
+        for run in 1..=3 {
+            begin(&mut journal, run, 0);
+            journal
+                .append(&rename(run, PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")))
+                .expect("append");
+            end(&mut journal, run);
+        }
+        drop(journal);
+
+        assert_eq!(Journal::remove_runs(&path, &[2]).expect("remove"), 1);
+
+        let sessions = Journal::sessions(&path).expect("sessions");
+        assert_eq!(sessions.iter().map(|session| session.run).collect::<Vec<_>>(), vec![1, 3]);
+        assert_eq!(Journal::next_run_id(&path).expect("next"), 4);
+        assert_eq!(Journal::renames(&path, 3).expect("renames").len(), 1);
+    }
+
+    #[test]
+    fn removing_the_newest_run_lets_its_id_come_back() {
+        let (_temp, path) = temp_journal();
+        let mut journal = Journal::open(path.clone()).expect("open");
+        begin(&mut journal, 1, 0);
+        end(&mut journal, 1);
+        begin(&mut journal, 2, 0);
+        end(&mut journal, 2);
+        drop(journal);
+
+        assert_eq!(Journal::remove_runs(&path, &[2]).expect("remove"), 1);
+
+        // Only the newest can come back: no surviving record can name it.
+        assert_eq!(Journal::next_run_id(&path).expect("next"), 2);
+        assert_eq!(Journal::sessions(&path).expect("sessions").len(), 1);
+    }
+
+    #[test]
+    fn removing_refuses_a_corrupt_line_and_leaves_the_file_alone() {
+        let (_temp, path) = temp_journal();
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+        let corrupt = b"nonsense\n";
+        std::fs::write(&path, corrupt).expect("write");
+
+        assert!(Journal::remove_runs(&path, &[1]).is_err());
+        assert_eq!(std::fs::read(&path).expect("read"), corrupt.as_slice());
+    }
+
+    #[test]
+    fn clearing_empties_the_journal_and_restarts_the_ids() {
+        let (_temp, path) = temp_journal();
+        let mut journal = Journal::open(path.clone()).expect("open");
+        begin(&mut journal, 1, 0);
+        end(&mut journal, 1);
+        drop(journal);
+
+        Journal::clear(&path).expect("clear");
+
+        assert!(Journal::sessions(&path).expect("sessions").is_empty());
+        assert_eq!(Journal::next_run_id(&path).expect("next"), 1);
+        assert!(path.exists(), "the file stays, with its permissions");
     }
 }
