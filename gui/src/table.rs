@@ -13,12 +13,10 @@ use renameant_core::plan::Status;
 use crate::app::{DANGER, OK, WARNING};
 use crate::format;
 use crate::model::{PlanModel, Sort, SortKey};
+use crate::style;
 
 const HEADER_HEIGHT: f32 = 24.0;
 const ROW_HEIGHT: f32 = 20.0;
-/// Left and right padding inside a cell, so every column's content is inset the
-/// same amount.
-const CELL_PADDING: f32 = 6.0;
 const STATUS_WIDTH: f32 = 110.0;
 /// The merged path column: room for a full path, with the name's tail last.
 const PATH_WIDTH: f32 = 300.0;
@@ -227,15 +225,16 @@ fn path_text(ui: &egui::Ui, path: &Path) -> egui::text::LayoutJob {
     job
 }
 
-/// One table cell's content, inset by [`CELL_PADDING`] on both sides so every
-/// column's content lines up. A horizontal scope fills the row height, which is
-/// what centres the content vertically; a frame would size to its content and
-/// sit at the top instead.
+/// One table cell's content, inset by [`style::CELL_PADDING`] on both sides so
+/// every column's content lines up. The horizontal scope fills the row height,
+/// which centres the content vertically; the frame supplies the same horizontal
+/// inset to every cell.
 fn cell<R>(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui) -> R) -> R {
     ui.horizontal_centered(|ui| {
-        ui.add_space(CELL_PADDING);
-        ui.set_max_width((ui.available_width() - CELL_PADDING).max(0.0));
-        content(ui)
+        egui::Frame::new()
+            .inner_margin(egui::Margin::symmetric(style::CELL_PADDING, 0))
+            .show(ui, content)
+            .inner
     })
     .inner
 }

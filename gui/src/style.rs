@@ -21,6 +21,8 @@ const INTERACT_SIZE: Vec2 = Vec2::new(40.0, 26.0);
 const MARGIN: i8 = 10;
 /// Margin inside a menu.
 const MENU_MARGIN: i8 = 8;
+/// Inset on both sides of a table cell, so every column's content lines up.
+pub const CELL_PADDING: i8 = 6;
 /// Space inside a panel title bar, around its title.
 const HEADER_PADDING: Margin = Margin::symmetric(12, 8);
 /// The window's accent: teal (#307f86). Selection, links and the panel title
