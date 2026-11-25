@@ -196,6 +196,10 @@ fn label(ui: &mut Ui, text: &str) {
 }
 
 fn fields(ui: &mut Ui, index: usize, edit: &mut RuleEdit) {
+    // An off rule reads as dimmed through its widget text, not only its border.
+    if !edit.enabled {
+        ui.visuals_mut().override_text_color = Some(OFF);
+    }
     ui.horizontal_wrapped(|ui| {
         if edit.kind != RuleKind::Number {
             target_combo(ui, index, edit);
@@ -343,5 +347,5 @@ fn hint(ui: &mut Ui, edit: &RuleEdit) {
         RuleKind::Date => "today's date, the same for every row in this preview",
         _ => return,
     };
-    ui.label(RichText::new(text).weak());
+    ui.label(text);
 }
