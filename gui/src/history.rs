@@ -70,7 +70,7 @@ pub fn show(
                         history.open.insert(session.run);
                     }
                 }
-                ui.monospace(format::utc_text(session.at));
+                ui.monospace(format::local_text(session.at));
                 ui.label(format!("{} renames", session.renames));
             });
             let mut marks: Vec<String> = Vec::new();

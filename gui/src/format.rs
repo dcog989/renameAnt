@@ -4,6 +4,7 @@
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
+use jiff::{Timestamp, ZonedDateTime, tz::TimeZone};
 use renameant_core::plan::{ConflictKind, InvalidKind, Status};
 
 /// What a row's status means, in the user's words.
@@ -60,31 +61,24 @@ pub fn size_text(bytes: u64) -> String {
     if unit == 0 { format!("{bytes} B") } else { format!("{value:.1} {}", UNITS[unit]) }
 }
 
-/// A unix timestamp as `yyyy/mm/dd, hh:mm:ss` in UTC. Local time would need a
-/// date crate, so the arithmetic is done here against the epoch instead.
-pub fn utc_text(seconds: u64) -> String {
-    const SECS_PER_DAY: u64 = 24 * 60 * 60;
-    let days = (seconds / SECS_PER_DAY) as i64;
-    let rest = seconds % SECS_PER_DAY;
-    let (year, month, day) = civil_from_days(days);
-    let (hour, minute, second) = (rest / 3600, rest / 60 % 60, rest % 60);
-    format!("{year:04}/{month:02}/{day:02}, {hour:02}:{minute:02}:{second:02}")
+/// A unix timestamp as `yyyy/mm/dd, hh:mm:ss` in the system's local time zone.
+pub fn local_text(seconds: u64) -> String {
+    let Ok(seconds) = i64::try_from(seconds) else { return String::new() };
+    let Ok(stamp) = Timestamp::from_second(seconds) else { return String::new() };
+    zoned_text(&stamp.to_zoned_datetime(TimeZone::system()))
 }
 
-/// The civil date of a day number since 1970-01-01: Howard Hinnant's
-/// `civil_from_days`, which is exact for the proleptic Gregorian calendar.
-fn civil_from_days(days: i64) -> (i64, u64, u64) {
-    let shifted = days + 719_468;
-    let era = if shifted >= 0 { shifted } else { shifted - 146_096 } / 146_097;
-    let day_of_era = (shifted - era * 146_097) as u64;
-    let year_of_era =
-        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let year = year_of_era as i64 + era * 400;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let month_shift = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * month_shift + 2) / 5 + 1;
-    let month = if month_shift < 10 { month_shift + 3 } else { month_shift - 9 };
-    (if month <= 2 { year + 1 } else { year }, month, day)
+/// The same stamp in an explicit zone, so the field layout is testable.
+fn zoned_text(zoned: &ZonedDateTime) -> String {
+    format!(
+        "{:04}/{:02}/{:02}, {:02}:{:02}:{:02}",
+        zoned.year(),
+        zoned.month(),
+        zoned.day(),
+        zoned.hour(),
+        zoned.minute(),
+        zoned.second()
+    )
 }
 
 #[cfg(test)]
@@ -99,12 +93,18 @@ mod tests {
     }
 
     #[test]
-    fn timestamps_read_as_utc_date_and_time() {
-        assert_eq!(utc_text(0), "1970/01/01, 00:00:00");
-        assert_eq!(utc_text(1_000_000_000), "2001/09/09, 01:46:40");
-        assert_eq!(utc_text(1_700_000_000), "2023/11/14, 22:13:20");
-        // A leap day, so the arithmetic is checked past a plain month boundary.
-        assert_eq!(utc_text(1_709_164_800), "2024/02/29, 00:00:00");
+    fn timestamps_read_as_local_date_and_time() {
+        let at = |seconds: u64, offset_hours: i8| {
+            let zone = TimeZone::fixed(jiff::tz::offset(offset_hours));
+            let stamp = Timestamp::from_second(seconds as i64).expect("a valid second");
+            zoned_text(&stamp.to_zoned_datetime(zone))
+        };
+        assert_eq!(at(0, 0), "1970/01/01, 00:00:00");
+        assert_eq!(at(1_000_000_000, 0), "2001/09/09, 01:46:40");
+        // The same instant two hours east is the next day, which UTC hid.
+        assert_eq!(at(1_700_000_000, 2), "2023/11/15, 00:13:20");
+        // A leap day, so the calendar is checked past a plain month boundary.
+        assert_eq!(at(1_709_164_800, 0), "2024/02/29, 00:00:00");
     }
 
     #[test]

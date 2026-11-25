@@ -134,7 +134,7 @@ pub fn show(ui: &mut egui::Ui, model: &mut PlanModel) -> Change {
                     meta.and_then(|meta| meta.size).map_or_else(String::new, format::size_text);
                 let modified = meta
                     .and_then(|meta| meta.mtime)
-                    .map_or_else(String::new, |mtime| format::utc_text(unix_seconds(mtime)));
+                    .map_or_else(String::new, |mtime| format::local_text(unix_seconds(mtime)));
                 row.col(|ui| {
                     cell(ui, |ui| {
                         right(ui, |ui| {
@@ -256,7 +256,7 @@ fn fixed_column_edge(ui: &egui::Ui) -> f32 {
 }
 
 /// The file's modification time as unix seconds. A pre-epoch time reads as 0,
-/// which the UTC format shows as the epoch rather than failing.
+/// so it shows the epoch in local time rather than failing.
 fn unix_seconds(mtime: std::time::SystemTime) -> u64 {
     mtime.duration_since(UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs())
 }
