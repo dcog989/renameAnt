@@ -388,6 +388,9 @@ pub fn with_defaults(mut edits: Vec<RuleEdit>) -> Vec<RuleEdit> {
     // when the kinds changed. Drop it before topping the list up.
     edits.retain(|edit| edit.builtin || !edit.is_blank());
     for kind in RuleKind::ALL {
+        if edits.iter().any(|edit| edit.kind == kind && edit.builtin) {
+            continue;
+        }
         match edits.iter_mut().find(|edit| edit.kind == kind) {
             Some(edit) => edit.builtin = true,
             None => edits.push(RuleEdit { builtin: true, kind, ..RuleEdit::default() }),
@@ -525,6 +528,24 @@ mod tests {
         assert_eq!(edits.iter().filter(|edit| edit.kind == RuleKind::Trim).count(), 1);
         assert_eq!(edits.iter().filter(|edit| edit.builtin).count(), RuleKind::ALL.len());
         assert!(edits.contains(&custom));
+    }
+
+    #[test]
+    fn a_custom_card_before_a_builtin_stays_custom() {
+        let custom = RuleEdit { kind: RuleKind::Trim, count: 2, ..RuleEdit::default() };
+        let builtin = RuleEdit { kind: RuleKind::Trim, builtin: true, ..RuleEdit::default() };
+
+        let edits = with_defaults(vec![custom.clone(), builtin]);
+
+        let trims: Vec<&RuleEdit> =
+            edits.iter().filter(|edit| edit.kind == RuleKind::Trim).collect();
+        assert_eq!(trims.len(), 2);
+        assert_eq!(
+            trims.iter().filter(|edit| edit.builtin).count(),
+            1,
+            "only the original default card is unremovable"
+        );
+        assert!(!trims[0].builtin, "the custom card keeps its remove button");
     }
 
     #[test]

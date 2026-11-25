@@ -69,7 +69,7 @@ fn pump_for_labels(harness: &mut Harness<'_, App>, label: &str, at_least: usize)
 fn overlay_name(app: &App) -> &'static str {
     match &app.overlay {
         None => "none",
-        Some(Overlay::ConfirmApply) => "confirm-apply",
+        Some(Overlay::ConfirmApply { .. }) => "confirm-apply",
         Some(Overlay::ConfirmUndo(_)) => "confirm-undo",
         Some(Overlay::ConfirmUndoRow { .. }) => "confirm-undo-row",
         Some(Overlay::ConfirmRemove(_)) => "confirm-remove",
@@ -153,7 +153,7 @@ fn the_window_scans_plans_applies_and_undoes() {
     // backdrop, while the AccessKit Click action reaches the button.
     harness.get_by_label("Rename Now").click();
     harness.step();
-    assert!(matches!(harness.state().overlay, Some(Overlay::ConfirmApply)));
+    assert!(matches!(harness.state().overlay, Some(Overlay::ConfirmApply { .. })));
     pump_for_labels(&mut harness, "Apply", 1);
     harness.get_by_label("Apply").click_accesskit();
     pump_until(&mut harness, "the run report", |app| {
@@ -233,6 +233,8 @@ fn a_picked_path_follows_only_a_rename_that_happened() {
     app.added = vec![PathBuf::from("/d/renamed"), PathBuf::from("/d/failed")];
     let report = ApplyReport {
         run: 1,
+        at: 0,
+        records: 1,
         aborted: false,
         rows: vec![
             ApplyRow {

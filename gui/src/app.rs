@@ -10,7 +10,8 @@ use std::time::{Duration, Instant};
 use egui::{Color32, TextureHandle};
 use renameant_core::apply::{ApplyOptions, ApplyReport, Outcome};
 use renameant_core::filter::Filter;
-use renameant_core::journal::{self, Journal, RunId, Session};
+use renameant_core::journal::{self, RunId, Session};
+use renameant_core::plan::PlanRow;
 use renameant_core::rule::RuleSet;
 
 use crate::config;
@@ -45,12 +46,38 @@ const FALLBACK_JOURNAL: &str = "renameant-journal.jsonl";
 /// Only used when neither XDG_CONFIG_HOME nor HOME is set.
 const FALLBACK_CONFIG: &str = "renameant-rules.json";
 
-pub(crate) const OK: Color32 = Color32::from_rgb(110, 190, 120);
-pub(crate) const WARNING: Color32 = Color32::from_rgb(230, 165, 60);
-pub(crate) const DANGER: Color32 = Color32::from_rgb(222, 95, 85);
+/// Status colours for the dark theme: light enough for a near-black window.
+const OK_DARK: Color32 = Color32::from_rgb(110, 190, 120);
+const WARNING_DARK: Color32 = Color32::from_rgb(230, 165, 60);
+const DANGER_DARK: Color32 = Color32::from_rgb(222, 95, 85);
+/// The same meanings on a light window, darkened for APCA text contrast.
+const OK_LIGHT: Color32 = Color32::from_rgb(27, 94, 32);
+const WARNING_LIGHT: Color32 = Color32::from_rgb(122, 74, 0);
+const DANGER_LIGHT: Color32 = Color32::from_rgb(164, 34, 26);
+
+fn themed(ui: &egui::Ui, light: Color32, dark: Color32) -> Color32 {
+    if ui.visuals().dark_mode { dark } else { light }
+}
+
+pub(crate) fn ok(ui: &egui::Ui) -> Color32 {
+    themed(ui, OK_LIGHT, OK_DARK)
+}
+
+pub(crate) fn warning(ui: &egui::Ui) -> Color32 {
+    themed(ui, WARNING_LIGHT, WARNING_DARK)
+}
+
+pub(crate) fn danger(ui: &egui::Ui) -> Color32 {
+    themed(ui, DANGER_LIGHT, DANGER_DARK)
+}
 
 enum Overlay {
-    ConfirmApply,
+    /// The rows named in the confirmation, captured when it opened, so no
+    /// frame walks the whole plan.
+    ConfirmApply {
+        skipped: Vec<PlanRow>,
+        totals: crate::model::Totals,
+    },
     ConfirmUndo(Session),
     ConfirmUndoRow {
         run: RunId,
@@ -62,6 +89,8 @@ enum Overlay {
     Report {
         title: String,
         report: ApplyReport,
+        /// Indices of the rows the report lists, chosen when it arrived.
+        listed: Vec<usize>,
         /// Rows the report does not list, counted when it arrived.
         rest: usize,
     },
@@ -83,6 +112,9 @@ pub struct App {
     edits: Vec<RuleEdit>,
     /// The rule list as it is on disk, so a change is written once.
     saved: Vec<RuleEdit>,
+    /// The list the last save attempt tried to write. A failed save is retried
+    /// on the next edit, not on every frame.
+    save_attempted: Vec<RuleEdit>,
     config_path: PathBuf,
     /// The rules and filter the current plan was built from.
     planned: (RuleSet, Filter),
@@ -114,46 +146,34 @@ impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         style::apply(&cc.egui_ctx);
         let config_path = config::default_path().unwrap_or_else(|_| PathBuf::from(FALLBACK_CONFIG));
-        let (edits, mut status) = match config::load(&config_path) {
+        let (edits, status) = match config::load(&config_path) {
             Ok((edits, unsupported)) => {
                 let mut status = unsupported_rules(&unsupported);
-                let edits = with_defaults(edits);
-                // Heal the file once, so the same drop is not reported every start.
-                if !unsupported.is_empty()
-                    && let Err(error) = config::save(&config_path, &edits)
-                {
-                    status.push_str(&format!("; the cleaned rules could not be saved: {error}"));
+                // A later save writes only the rules this version knows. Keep
+                // the original file so a newer version's rule is not lost.
+                if !unsupported.is_empty() {
+                    let backup = config_path.with_extension("json.bak");
+                    if let Err(error) = std::fs::copy(&config_path, &backup) {
+                        status.push_str(&format!("; the rules could not be backed up: {error}"));
+                    }
                 }
-                (edits, status)
+                (with_defaults(edits), status)
             }
             Err(error) => (default_rules(), format!("the saved rules could not be read: {error}")),
         };
-        let journal = journal::default_path().unwrap_or_else(|_| PathBuf::from(FALLBACK_JOURNAL));
-        if let Err(error) = Journal::prune(&journal) {
-            if !status.is_empty() {
-                status.push(' ');
-            }
-            status.push_str(&format!("the journal could not be pruned: {error}"));
-        }
-        let sessions = Journal::sessions(&journal).unwrap_or_default();
-        let interrupted = sessions.iter().filter(|session| session.interrupted).count();
-        if interrupted > 0 {
-            if !status.is_empty() {
-                status.push(' ');
-            }
-            status.push_str(&format!(
-                "{interrupted} interrupted {} in the journal: reverse {} from the journal",
-                if interrupted == 1 { "run" } else { "runs" },
-                if interrupted == 1 { "it" } else { "them" },
-            ));
-        }
-        App {
+        let journal = journal::default_path().unwrap_or_else(|_| {
+            std::env::current_dir()
+                .map(|dir| dir.join(FALLBACK_JOURNAL))
+                .unwrap_or_else(|_| std::env::temp_dir().join(FALLBACK_JOURNAL))
+        });
+        let mut app = App {
             model: PlanModel::default(),
             added: Vec::new(),
             dir_field: String::new(),
             recursive: false,
             fast: false,
             saved: edits.clone(),
+            save_attempted: edits.clone(),
             edits,
             config_path,
             planned: (RuleSet::default(), Filter::default()),
@@ -164,14 +184,18 @@ impl App {
             browsing: false,
             stat_pending: false,
             journal,
-            sessions,
+            sessions: Vec::new(),
             history: history::History::default(),
             logo: logo::texture(&cc.egui_ctx),
             journal_open: true,
             overwrite: false,
             status,
             overlay: None,
-        }
+        };
+        // Pruning and listing the journal read the whole file; keep them off
+        // the first frame.
+        app.dispatch(Job::LoadJournal(app.journal.clone()));
+        app
     }
 
     /// The enabled rules, in order. An off rule is skipped here and nowhere else.
@@ -211,13 +235,21 @@ impl App {
     /// Writes the rule list to disk when it changed. Every frame compares, so a
     /// keystroke is one small write, never one per frame.
     fn persist(&mut self) {
-        if self.edits == self.saved {
+        if self.edits == self.saved || self.edits == self.save_attempted {
             return;
         }
-        if let Err(error) = config::save(&self.config_path, &self.edits) {
-            self.status = format!("the rules could not be saved: {error}");
+        self.save_attempted.clone_from(&self.edits);
+        match config::save(&self.config_path, &self.edits) {
+            Ok(()) => self.saved.clone_from(&self.edits),
+            Err(error) => self.status = format!("the rules could not be saved: {error}"),
         }
-        self.saved.clone_from(&self.edits);
+    }
+
+    fn append_status(&mut self, text: &str) {
+        if !self.status.is_empty() {
+            self.status.push(' ');
+        }
+        self.status.push_str(text);
     }
 
     /// Hands one job to the worker. Counted, so a `Done` that lands while
@@ -258,6 +290,15 @@ impl App {
     fn add(&mut self, picked: Vec<PathBuf>) {
         let before = self.added.len();
         for path in picked {
+            // The journal replays names from another working directory, so a
+            // relative pick would make undo depend on where the app was started.
+            let path = match std::path::absolute(&path) {
+                Ok(path) => path,
+                Err(error) => {
+                    self.status = format!("cannot use {}: {error}", path.display());
+                    continue;
+                }
+            };
             if !self.added.contains(&path) {
                 self.added.push(path);
             }
@@ -358,8 +399,27 @@ impl App {
                         self.model.set_scan(entries, index);
                         self.replan();
                     }
-                    Err(error) => self.status = format!("cannot read the picked paths: {error}"),
+                    Err(error) => {
+                        // The old rows belong to a selection that just failed
+                        // to scan; applying them would rename the wrong files.
+                        self.model.clear();
+                        self.status = format!("cannot read the picked paths: {error}");
+                    }
                 },
+                Done::JournalLoaded { sessions, prune_error } => {
+                    self.sessions = sessions;
+                    if let Some(error) = prune_error {
+                        self.append_status(&format!("the journal could not be pruned: {error}"));
+                    }
+                    let interrupted = self.sessions.iter().filter(|session| session.interrupted).count();
+                    if interrupted > 0 {
+                        self.append_status(&format!(
+                            "{interrupted} interrupted {} in the journal: reverse {} from the journal",
+                            if interrupted == 1 { "run" } else { "runs" },
+                            if interrupted == 1 { "it" } else { "them" },
+                        ));
+                    }
+                }
                 Done::Statted(meta) => {
                     self.stat_pending = false;
                     self.model.set_meta(meta);
@@ -375,8 +435,12 @@ impl App {
                         Picked::Files(paths) => self.add(paths),
                     }
                 }
-                Done::Ran { undo_of, result, sessions } => {
-                    self.sessions = sessions;
+                Done::Ran { undo_of, result, session, sessions } => {
+                    if let Some(session) = session {
+                        self.sessions.push(session);
+                    } else {
+                        self.sessions = sessions;
+                    }
                     match result {
                         Ok(report) => {
                             let run = report.run;
@@ -387,12 +451,14 @@ impl App {
                             let (renamed, failed) = (report.renamed(), report.failed());
                             self.status = format!("run {run}: {renamed} renamed, {failed} failed");
                             self.follow_renames(&report);
+                            let listed = dialogs::listed_indices(&report);
                             let rest = dialogs::unlisted_rows(&report);
-                            self.overlay = Some(Overlay::Report { title, report, rest });
+                            self.overlay =
+                                Some(Overlay::Report { title, report, listed, rest });
                         }
                         Err(error) => {
                             self.status = format!(
-                                "the journal could not be written, so the run aborted: {error}"
+                                "the journal could not be written, so the run stopped: {error}"
                             );
                         }
                     }
@@ -483,17 +549,17 @@ impl App {
         let (not_utf8, not_nfc) = (self.model.not_utf8, self.model.not_nfc);
         if not_utf8 > 0 {
             ui.colored_label(
-                WARNING,
+                warning(ui),
                 format!(
                     "{not_utf8} not UTF-8: regex, case, normalize and the remove rules skip them"
                 ),
             );
         }
         if not_nfc > 0 {
-            ui.colored_label(WARNING, format!("{not_nfc} not NFC"));
+            ui.colored_label(warning(ui), format!("{not_nfc} not NFC"));
         }
         if let Some(error) = &self.model.error {
-            ui.colored_label(WARNING, format!("warning: {error}"));
+            ui.colored_label(warning(ui), format!("warning: {error}"));
         }
     }
 
@@ -559,11 +625,17 @@ impl App {
                 .on_hover_text("nothing is written before this")
                 .clicked()
             {
-                self.overlay = Some(Overlay::ConfirmApply);
+                self.overlay = Some(Overlay::ConfirmApply {
+                    skipped: self.model.skipped_rows(dialogs::SKIP_ROWS_SHOWN).cloned().collect(),
+                    totals: self.model.totals,
+                });
             }
             style::pointer(ui.checkbox(&mut self.overwrite, "Overwrite existing files"));
             if self.overwrite {
-                ui.colored_label(DANGER, "irrecoverable: undo cannot restore what this clobbers");
+                ui.colored_label(
+                    danger(ui),
+                    "irrecoverable: undo cannot restore what this clobbers",
+                );
             }
         });
         if !self.status.is_empty() {
@@ -636,8 +708,8 @@ impl App {
         let modal = egui::Modal::new(egui::Id::unique("renameant-overlay")).show(ctx, |ui| {
             ui.set_min_width(OVERLAY_WIDTH);
             let choice = match &overlay {
-                Overlay::ConfirmApply => {
-                    dialogs::confirm_apply(ui, &self.model, self.overwrite, self.fast)
+                Overlay::ConfirmApply { skipped, totals } => {
+                    dialogs::confirm_apply(ui, skipped, *totals, self.overwrite, self.fast)
                 }
                 Overlay::ConfirmUndo(session) => dialogs::confirm_undo(ui, session),
                 Overlay::ConfirmUndoRow { run, from, to } => {
@@ -645,17 +717,32 @@ impl App {
                 }
                 Overlay::ConfirmRemove(session) => dialogs::confirm_remove(ui, session),
                 Overlay::ConfirmClear => dialogs::confirm_clear(ui, self.sessions.len()),
-                Overlay::Report { title, report, rest } => {
-                    dialogs::show_report(ui, title, report, *rest)
+                Overlay::Report { title, report, listed, rest } => {
+                    dialogs::show_report(ui, title, report, listed, *rest)
                 }
             };
             match choice {
                 Choice::None => {}
-                Choice::Apply => self.start_apply(),
-                Choice::UndoRun(run) => self.start_undo(run),
-                Choice::UndoRow { run, from, to } => self.start_undo_row(run, from, to),
-                Choice::Remove(run) => self.start_remove(run),
-                Choice::ClearAll => self.start_clear(),
+                Choice::Apply => {
+                    keep = false;
+                    self.start_apply();
+                }
+                Choice::UndoRun(run) => {
+                    keep = false;
+                    self.start_undo(run);
+                }
+                Choice::UndoRow { run, from, to } => {
+                    keep = false;
+                    self.start_undo_row(run, from, to);
+                }
+                Choice::Remove(run) => {
+                    keep = false;
+                    self.start_remove(run);
+                }
+                Choice::ClearAll => {
+                    keep = false;
+                    self.start_clear();
+                }
                 Choice::Close => keep = false,
             }
         });

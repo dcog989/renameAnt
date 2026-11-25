@@ -11,7 +11,7 @@ use egui_extras::{Column, TableBuilder};
 
 use renameant_core::plan::Status;
 
-use crate::app::{DANGER, OK, WARNING};
+use crate::app::{danger, ok, warning};
 use crate::format;
 use crate::model::{PlanModel, Sort, SortKey};
 use crate::style;
@@ -128,7 +128,7 @@ pub fn show(ui: &mut egui::Ui, model: &mut PlanModel) -> Change {
                     row_fill(&painter, ui, entry.status, at);
                     cell(ui, |ui| {
                         ui.colored_label(
-                            status_color(entry.status),
+                            status_color(ui, entry.status),
                             format::status_label(entry.status),
                         );
                     });
@@ -269,7 +269,7 @@ fn row_fill(painter: &egui::Painter, ui: &egui::Ui, status: Status, row_index: u
     if status == Status::Unchanged {
         return;
     }
-    let color = status_color(status);
+    let color = status_color(ui, status);
     let fill = Color32::from_rgba_unmultiplied(
         color.r(),
         color.g(),
@@ -430,11 +430,11 @@ fn paint_direction(ui: &egui::Ui, rect: egui::Rect, descending: bool) {
     ui.painter().add(shape);
 }
 
-fn status_color(status: Status) -> Color32 {
+fn status_color(ui: &egui::Ui, status: Status) -> Color32 {
     match status {
-        Status::Ok => OK,
+        Status::Ok => ok(ui),
         Status::Unchanged => Color32::GRAY,
-        Status::Conflict(_) => WARNING,
-        Status::Invalid(_) => DANGER,
+        Status::Conflict(_) => warning(ui),
+        Status::Invalid(_) => danger(ui),
     }
 }

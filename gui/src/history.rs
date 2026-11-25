@@ -11,12 +11,13 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use egui::{RichText, Ui};
 use renameant_core::apply::is_staged;
 use renameant_core::journal::{Journal, RunId, Session};
 
-use crate::app::WARNING;
+use crate::app::warning;
 use crate::format;
 
 /// What the user asked to undo: a whole run, or one row of it.
@@ -33,11 +34,20 @@ pub enum Action {
     ClearAll,
 }
 
+/// How many run bodies stay cached. Enough for the open runs, bounded for a
+/// long history.
+const MAX_CACHED_RUNS: usize = 8;
+
+type Reversed = HashMap<RunId, HashSet<(PathBuf, PathBuf)>>;
+type ReversedKey = (usize, Option<RunId>);
+
 /// The runs the user opened, the renames each showed, and the list's order.
 #[derive(Default)]
 pub struct History {
     open: HashSet<RunId>,
     renames: HashMap<RunId, Result<Vec<(PathBuf, PathBuf)>, String>>,
+    /// The reversal evidence, rebuilt only when the session list changes.
+    reversed: Option<(ReversedKey, Arc<Reversed>)>,
     oldest_first: bool,
 }
 
@@ -46,6 +56,19 @@ impl History {
     pub fn forget_all(&mut self) {
         self.open.clear();
         self.renames.clear();
+        self.reversed = None;
+    }
+
+    /// The rows a later undo run reversed, cached by session list. The caller
+    /// gets a handle, so it can keep reading while the panel borrows the cache
+    /// mutably.
+    fn evidence(&mut self, sessions: &[Session], journal: &Path) -> Arc<Reversed> {
+        let key = (sessions.len(), sessions.last().map(|session| session.run));
+        if self.reversed.as_ref().is_none_or(|(cached, _)| cached != &key) {
+            let reversed = reversed_rows(sessions, journal, self);
+            self.reversed = Some((key, Arc::new(reversed)));
+        }
+        self.reversed.as_ref().expect("just cached").1.clone()
     }
 }
 
@@ -80,7 +103,7 @@ pub fn show(
     // shortcut: a row's reversal is read from the undo run that recorded its
     // inverse, so a second undo of an undo is not tracked. It would only mis-mark
     // a row after a redo, so upgrade when redo gets its own command.
-    let reversed = reversed_rows(sessions, journal, history);
+    let reversed = history.evidence(sessions, journal);
 
     let mut order: Vec<&Session> = sessions.iter().collect();
     if !history.oldest_first {
@@ -145,7 +168,7 @@ pub fn show(
                 marks.push(note);
             }
             if !marks.is_empty() {
-                ui.colored_label(WARNING, marks.join(" · "));
+                ui.colored_label(warning(ui), marks.join(" · "));
             }
             if expanded
                 && let Some(row) =
@@ -185,6 +208,10 @@ fn rows<'a>(
 ) -> &'a Result<Vec<(PathBuf, PathBuf)>, String> {
     // shortcut: read on the UI thread; only the oldest run in a huge journal can
     // stall a frame, so move this to the worker if that ever shows.
+    if !history.renames.contains_key(&run) && history.renames.len() >= MAX_CACHED_RUNS {
+        let open = history.open.clone();
+        history.renames.retain(|id, _| open.contains(id));
+    }
     history
         .renames
         .entry(run)
@@ -209,7 +236,7 @@ fn detail(
     let rows = match rows(journal, history, session.run) {
         Ok(rows) => rows.as_slice(),
         Err(error) => {
-            ui.colored_label(WARNING, format!("the renames could not be read: {error}"));
+            ui.colored_label(warning(ui), format!("the renames could not be read: {error}"));
             return None;
         }
     };
@@ -253,7 +280,7 @@ fn detail(
                 ui.monospace(format!("{} → {}", format::file_text(from), format::file_text(to)))
                     .on_hover_text(format!("{} → {}", from.display(), to.display()));
                 if reversed {
-                    ui.colored_label(WARNING, "reversed");
+                    ui.colored_label(warning(ui), "reversed");
                 }
             });
         }
@@ -284,7 +311,7 @@ mod tests {
     }
 
     fn rename(run: RunId, from: &str, to: &str) -> JournalRecord {
-        JournalRecord::Rename { run, from: from.into(), to: to.into() }
+        JournalRecord::Rename { run, from: from.into(), to: to.into(), id: None }
     }
 
     fn end(run: RunId) -> JournalRecord {

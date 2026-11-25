@@ -17,6 +17,8 @@ use renameant_core::scan::{self, DirIndex, Entry};
 use crate::model::FileMeta;
 
 pub enum Job {
+    /// Prune and list the journal, off the first frame.
+    LoadJournal(PathBuf),
     /// The picked folders and files, and whether to walk everything below the
     /// folders.
     Scan(Vec<PathBuf>, bool),
@@ -51,6 +53,11 @@ pub enum Picked {
 }
 
 pub enum Done {
+    /// The journal after startup: its runs, and why pruning failed if it did.
+    JournalLoaded {
+        sessions: Vec<Session>,
+        prune_error: Option<String>,
+    },
     Scanned(io::Result<(Vec<Entry>, DirIndex)>),
     /// A stat pass. Paths it could not read are left out.
     Statted(Vec<(PathBuf, FileMeta)>),
@@ -60,8 +67,10 @@ pub enum Done {
     Ran {
         undo_of: Option<RunId>,
         result: io::Result<ApplyReport>,
-        /// The journal as it stands after the run, so the history does not need
-        /// a second round trip.
+        /// The session a completed run added, so the history does not re-read
+        /// the journal. `None` after a journal failure, where `sessions` is the
+        /// full list instead.
+        session: Option<Session>,
         sessions: Vec<Session>,
     },
     /// Runs removed from the journal, or the journal cleared.
@@ -118,6 +127,10 @@ impl Worker {
 fn serve(jobs: Receiver<Job>, done: Sender<Done>) {
     while let Ok(job) = jobs.recv() {
         let message = match job {
+            Job::LoadJournal(path) => {
+                let prune_error = Journal::prune(&path).err().map(|error| error.to_string());
+                Done::JournalLoaded { sessions: sessions_at(&path), prune_error }
+            }
             Job::Scan(paths, recursive) => Done::Scanned(scan::scan_paths(&paths, recursive)),
             Job::Stat(paths) => {
                 let meta = paths
@@ -128,15 +141,15 @@ fn serve(jobs: Receiver<Job>, done: Sender<Done>) {
             }
             Job::Apply(plan, options) => {
                 let result = apply::apply(&plan, &options);
-                Done::Ran { undo_of: None, sessions: sessions_of(&options), result }
+                ran(None, result, &options)
             }
             Job::Undo(options, run) => {
                 let result = apply::undo(&options, run);
-                Done::Ran { undo_of: Some(run), sessions: sessions_of(&options), result }
+                ran(Some(run), result, &options)
             }
             Job::UndoOne(options, run, from, to) => {
                 let result = apply::undo_one(&options, run, &from, &to);
-                Done::Ran { undo_of: Some(run), sessions: sessions_of(&options), result }
+                ran(Some(run), result, &options)
             }
             Job::Forget(path, runs) => Done::Forgotten {
                 result: Journal::remove_runs(&path, &runs).map(|_| ()),
@@ -150,6 +163,25 @@ fn serve(jobs: Receiver<Job>, done: Sender<Done>) {
             return;
         }
     }
+}
+
+/// A finished run and the session it added. Only a journal failure needs the
+/// full list, because the run may then have a `begin` with no `end`.
+fn ran(
+    undo_of: Option<RunId>,
+    result: io::Result<ApplyReport>,
+    options: &ApplyOptions,
+) -> Done {
+    let session = result.as_ref().ok().map(|report| Session {
+        run: report.run,
+        at: report.at,
+        renames: report.records,
+        overwrite: undo_of.is_none() && options.overwrite,
+        undo_of,
+        interrupted: false,
+    });
+    let sessions = if result.is_err() { sessions_of(options) } else { Vec::new() };
+    Done::Ran { undo_of, result, session, sessions }
 }
 
 /// The link's own metadata, never the target's. `None` when the entry

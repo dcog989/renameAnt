@@ -115,8 +115,9 @@ impl PlanModel {
     pub fn set_scan(&mut self, entries: Vec<Entry>, index: DirIndex) {
         self.meta.clear();
         self.meta_loaded = false;
-        // The removals name the old directory's rows.
-        self.removed.clear();
+        // A removal is for a path, not for one scan: it survives a rescan of
+        // the same tree and is dropped once the path is gone.
+        self.removed.retain(|path| entries.iter().any(|entry| &entry.path == path));
         self.not_utf8 =
             entries.iter().filter(|entry| !is_utf8(entry.name.as_os_str().as_bytes())).count();
         self.not_nfc = entries
@@ -125,6 +126,13 @@ impl PlanModel {
             .count();
         self.entries = entries;
         self.index = Some(index);
+    }
+
+    /// Drops the scan after it failed. The filter stays; it is the user's
+    /// choice, not part of the scan.
+    pub fn clear(&mut self) {
+        let filter = std::mem::take(&mut self.filter);
+        *self = PlanModel { filter, ..PlanModel::default() };
     }
 
     /// Recomputes the plan for `rules`. Pure: `plan()` answers existence from
@@ -361,6 +369,26 @@ mod tests {
         model.sort = Sort { key: SortKey::Mtime, desc: false };
         model.rebuild_view();
         assert_eq!(model.view, vec![0, 2, 1, 3]);
+    }
+
+    #[test]
+    fn a_removed_path_survives_a_rescan_and_goes_when_it_is_gone() {
+        let entry = |name: &str| Entry {
+            path: PathBuf::from("/d").join(name),
+            name: std::ffi::OsString::from(name),
+            kind: renameant_core::scan::Kind::File,
+        };
+        let mut index = DirIndex::default();
+        index.existing.insert(PathBuf::from("/d"), std::collections::BTreeSet::new());
+        let mut model = PlanModel::default();
+        model.set_scan(vec![entry("a")], index.clone());
+        model.removed.insert(PathBuf::from("/d/a"));
+
+        model.set_scan(vec![entry("a")], index.clone());
+        assert!(model.removed.contains(&PathBuf::from("/d/a")), "the removal survives");
+
+        model.set_scan(vec![entry("b")], index);
+        assert!(model.removed.is_empty(), "a path outside the new scan is forgotten");
     }
 
     #[test]
