@@ -68,23 +68,31 @@ impl Destination<'_> {
         (left.dir, left.name.as_bytes()).cmp(&(right.dir, right.name.as_bytes()))
     }
 
-    /// The same, with name bytes folded to ASCII lower case: the order that puts
-    /// names differing only by case side by side.
+    /// The same, with names folded to lower case: the order that puts names
+    /// differing only by case side by side.
     fn compare_folded(left: &Self, right: &Self) -> Ordering {
         left.dir.cmp(&right.dir).then_with(|| folded_order(left.name, right.name))
     }
 }
 
-/// Byte order ignoring ASCII case.
+/// Name order ignoring case. UTF-8 names fold by Unicode lower case; names
+/// that are not UTF-8 fold ASCII only and sort apart, so the two classes never
+/// compare as one.
 fn folded_order(left: &OsStr, right: &OsStr) -> Ordering {
-    let (left, right) = (left.as_bytes(), right.as_bytes());
-    for (left, right) in left.iter().zip(right) {
-        let order = left.to_ascii_lowercase().cmp(&right.to_ascii_lowercase());
-        if order != Ordering::Equal {
-            return order;
+    match (std::str::from_utf8(left.as_bytes()), std::str::from_utf8(right.as_bytes())) {
+        (Ok(left), Ok(right)) => left
+            .chars()
+            .flat_map(char::to_lowercase)
+            .cmp(right.chars().flat_map(char::to_lowercase)),
+        (Ok(_), Err(_)) => Ordering::Less,
+        (Err(_), Ok(_)) => Ordering::Greater,
+        (Err(_), Err(_)) => {
+            let (left, right) = (left.as_bytes(), right.as_bytes());
+            let left = left.iter().map(|byte| byte.to_ascii_lowercase());
+            let right = right.iter().map(|byte| byte.to_ascii_lowercase());
+            left.cmp(right)
         }
     }
-    left.len().cmp(&right.len())
 }
 
 /// The destinations of the rows that can still be applied, in the two orders the
@@ -139,7 +147,7 @@ fn sources_of<'a>(
 }
 
 /// Two rows aiming at the same name, and two destinations that differ
-/// only by ASCII case. The second is only a real collision on a
+/// only by case. The second is only a real collision on a
 /// case-insensitive mount, but it is never applied either way.
 ///
 /// Both are found in one walk: names that are equal, and names that are equal
@@ -206,11 +214,11 @@ fn mark_target_exists(
         let end = at + targets.by_name[at..].iter().take_while(|it| it.dir == dir).count();
         let mut names = dirs.names(dir).map(|names| names.iter());
         let mut present = names.as_mut().and_then(Iterator::next);
-        // The same names folded to ASCII lower case: a case-insensitive mount
-        // treats them as one. A rename that only changes case is staged, so it
-        // is not a collision with its own source.
+        // The same names folded to lower case: a case-insensitive mount treats
+        // them as one. A rename that only changes case is staged, so it is not
+        // a collision with its own source.
         let folded: Option<BTreeSet<Vec<u8>>> = dirs.names(dir).map(|names| {
-            names.iter().map(|name| name.as_bytes().to_ascii_lowercase()).collect()
+            names.iter().map(|name| osname::case_fold(name.as_bytes())).collect()
         });
 
         for target in &targets.by_name[at..end] {
@@ -236,9 +244,9 @@ fn mark_target_exists(
             );
             let folded_taken = !on_disk
                 && !case_only
-                && folded
-                    .as_ref()
-                    .is_some_and(|names| names.contains(&target.name.as_bytes().to_ascii_lowercase()));
+                && folded.as_ref().is_some_and(|names| {
+                    names.contains(&osname::case_fold(target.name.as_bytes()))
+                });
             if folded_taken {
                 status[target.row] = Status::Conflict(ConflictKind::CaseOnly);
             }
@@ -717,6 +725,73 @@ mod tests {
         };
         assert_eq!(status_of("bar.txt"), Status::Conflict(ConflictKind::CaseOnly));
         assert_eq!(status_of("foo.txt"), Status::Unchanged);
+    }
+
+    #[test]
+    fn a_unicode_case_only_rename_is_staged() {
+        let temp = tempfile::tempdir().unwrap();
+        write(temp.path(), &["Ärger.txt"]);
+
+        let rows = plan_dir(
+            temp.path(),
+            vec![Rule::Literal {
+                find: "Ä".as_bytes().to_vec(),
+                replace: "ä".as_bytes().to_vec(),
+                target: Target::Stem,
+            }],
+        );
+
+        assert_eq!(rows[0].status, Status::Ok);
+        assert!(rows[0].via_temp);
+    }
+
+    #[test]
+    fn unicode_destinations_that_differ_only_by_case_collide() {
+        let temp = tempfile::tempdir().unwrap();
+        write(temp.path(), &["a.txt", "b.txt"]);
+
+        let rows = plan_dir(
+            temp.path(),
+            vec![
+                Rule::Literal {
+                    find: b"a".to_vec(),
+                    replace: "Ä".as_bytes().to_vec(),
+                    target: Target::Stem,
+                },
+                Rule::Literal {
+                    find: b"b".to_vec(),
+                    replace: "ä".as_bytes().to_vec(),
+                    target: Target::Stem,
+                },
+            ],
+        );
+
+        let status_of = |name: &str| {
+            rows.iter().find(|row| file_name_of(&row.src) == OsStr::new(name)).unwrap().status
+        };
+        assert_eq!(status_of("a.txt"), Status::Conflict(ConflictKind::CaseOnly));
+        assert_eq!(status_of("b.txt"), Status::Conflict(ConflictKind::CaseOnly));
+    }
+
+    #[test]
+    fn a_destination_that_differs_only_by_case_from_an_existing_unicode_name_is_a_conflict() {
+        let temp = tempfile::tempdir().unwrap();
+        write(temp.path(), &["café.txt", "bar.txt"]);
+
+        let rows = plan_dir(
+            temp.path(),
+            vec![Rule::Literal {
+                find: b"bar".to_vec(),
+                replace: "CAFÉ".as_bytes().to_vec(),
+                target: Target::Stem,
+            }],
+        );
+
+        let status_of = |name: &str| {
+            rows.iter().find(|row| file_name_of(&row.src) == OsStr::new(name)).unwrap().status
+        };
+        assert_eq!(status_of("bar.txt"), Status::Conflict(ConflictKind::CaseOnly));
+        assert_eq!(status_of("café.txt"), Status::Unchanged);
     }
 
     #[test]

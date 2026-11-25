@@ -18,7 +18,6 @@ pub const PATH_MAX: usize = 4096;
 pub struct Parts<'a> {
     pub stem: &'a [u8],
     pub ext: &'a [u8],
-    pub has_ext: bool,
 }
 
 /// Split: the extension is everything after the final `.` when that
@@ -26,14 +25,14 @@ pub struct Parts<'a> {
 /// no extension and the stem is the whole name, so `.bashrc` and `foo.` have no
 /// extension while `archive.tar.gz` splits into `archive.tar` and `gz`.
 pub fn parts(name: &[u8]) -> Parts<'_> {
-    let none = Parts { stem: name, ext: &[], has_ext: false };
+    let none = Parts { stem: name, ext: &[] };
     let Some(dot) = name.iter().rposition(|b| *b == b'.') else {
         return none;
     };
     if dot == 0 || dot + 1 == name.len() {
         return none;
     }
-    Parts { stem: &name[..dot], ext: &name[dot + 1..], has_ext: true }
+    Parts { stem: &name[..dot], ext: &name[dot + 1..] }
 }
 
 /// The bytes a rule rewrites for `target`.
@@ -56,7 +55,7 @@ pub fn splice_into(name: &[u8], target: Target, sel: &[u8], out: &mut Vec<u8>) {
         Target::Stem => {
             let split = parts(name);
             out.extend_from_slice(sel);
-            if split.has_ext {
+            if !split.ext.is_empty() {
                 out.push(b'.');
                 out.extend_from_slice(split.ext);
             }
@@ -81,11 +80,23 @@ pub fn is_nfc(name: &[u8]) -> bool {
     text.chars().eq(text.nfc())
 }
 
-/// A rename whose source and destination differ only by ASCII case (§8). The
+/// A name folded for comparison on a case-insensitive mount: Unicode lower
+/// case for UTF-8, ASCII only for bytes that are not text.
+///
+/// shortcut: this lower-cases, it does not apply full Unicode case folding
+/// (`ß` does not fold to `ss`); add a folding table if those names matter.
+pub(crate) fn case_fold(name: &[u8]) -> Vec<u8> {
+    match std::str::from_utf8(name) {
+        Ok(text) => text.chars().flat_map(char::to_lowercase).collect::<String>().into_bytes(),
+        Err(_) => name.to_ascii_lowercase(),
+    }
+}
+
+/// A rename whose source and destination differ only by case (§8). The
 /// destination may sit on a case-insensitive mount, so such a row is staged
 /// through a temp name instead of a direct `RENAME_NOREPLACE`.
 pub fn is_case_only(src: &[u8], dst: &[u8]) -> bool {
-    src != dst && src.eq_ignore_ascii_case(dst)
+    src != dst && (src.eq_ignore_ascii_case(dst) || case_fold(src) == case_fold(dst))
 }
 
 /// Plan-time validation: a bad destination is an `Invalid` row up
@@ -103,7 +114,7 @@ pub fn validate(name: &[u8], path_len: usize) -> Option<InvalidKind> {
     if name.len() > NAME_MAX {
         return Some(InvalidKind::NameTooLong);
     }
-    if path_len > PATH_MAX {
+    if path_len >= PATH_MAX {
         return Some(InvalidKind::PathTooLong);
     }
     None
@@ -113,23 +124,23 @@ pub fn validate(name: &[u8], path_len: usize) -> Option<InvalidKind> {
 mod tests {
     use super::*;
 
-    fn split(name: &str) -> (&[u8], &[u8], bool) {
+    fn split(name: &str) -> (&[u8], &[u8]) {
         let parts = parts(name.as_bytes());
-        (parts.stem, parts.ext, parts.has_ext)
+        (parts.stem, parts.ext)
     }
 
     #[test]
     fn extension_is_after_the_final_inner_dot() {
-        assert_eq!(split("archive.tar.gz"), (b"archive.tar".as_slice(), b"gz".as_slice(), true));
-        assert_eq!(split("photo.jpg"), (b"photo".as_slice(), b"jpg".as_slice(), true));
+        assert_eq!(split("archive.tar.gz"), (b"archive.tar".as_slice(), b"gz".as_slice()));
+        assert_eq!(split("photo.jpg"), (b"photo".as_slice(), b"jpg".as_slice()));
     }
 
     #[test]
     fn leading_and_trailing_dots_are_not_extensions() {
-        assert_eq!(split(".bashrc"), (b".bashrc".as_slice(), b"".as_slice(), false));
-        assert_eq!(split("foo."), (b"foo.".as_slice(), b"".as_slice(), false));
-        assert_eq!(split(".."), (b"..".as_slice(), b"".as_slice(), false));
-        assert_eq!(split("file"), (b"file".as_slice(), b"".as_slice(), false));
+        assert_eq!(split(".bashrc"), (b".bashrc".as_slice(), b"".as_slice()));
+        assert_eq!(split("foo."), (b"foo.".as_slice(), b"".as_slice()));
+        assert_eq!(split(".."), (b"..".as_slice(), b"".as_slice()));
+        assert_eq!(split("file"), (b"file".as_slice(), b"".as_slice()));
     }
 
     #[test]
@@ -170,6 +181,15 @@ mod tests {
     }
 
     #[test]
+    fn case_only_detection_folds_unicode_letters() {
+        assert!(is_case_only("Ärger.txt".as_bytes(), "ärger.txt".as_bytes()));
+        assert!(is_case_only("café.txt".as_bytes(), "CAFÉ.txt".as_bytes()));
+        assert!(!is_case_only("Ärger.txt".as_bytes(), "Arger.txt".as_bytes()));
+        // Non-UTF-8 bytes can only fold ASCII, but that still counts.
+        assert!(is_case_only(b"CAF\xe9", b"caf\xe9"));
+    }
+
+    #[test]
     fn validation_rejects_empty_separators_and_overlong_names() {
         assert_eq!(validate(b"", 1), Some(InvalidKind::Empty));
         assert_eq!(validate(b".", 1), Some(InvalidKind::IllegalChar));
@@ -177,7 +197,8 @@ mod tests {
         assert_eq!(validate(b"a/b", 3), Some(InvalidKind::IllegalChar));
         assert_eq!(validate(b"a\0b", 3), Some(InvalidKind::IllegalChar));
         assert_eq!(validate(&[b'a'; NAME_MAX + 1], 0), Some(InvalidKind::NameTooLong));
-        assert_eq!(validate(b"ok", PATH_MAX + 1), Some(InvalidKind::PathTooLong));
+        assert_eq!(validate(b"ok", PATH_MAX - 1), None);
+        assert_eq!(validate(b"ok", PATH_MAX), Some(InvalidKind::PathTooLong));
         assert_eq!(validate(b"ok", 10), None);
     }
 }
