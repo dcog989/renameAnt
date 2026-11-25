@@ -10,10 +10,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     File,
     Dir,

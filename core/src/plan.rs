@@ -5,15 +5,12 @@ use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
-
 use crate::conflict;
 use crate::osname;
 use crate::rule::{RuleError, RuleSet};
 use crate::scan::{DirIndex, Entry};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
     /// Will be applied.
     Ok,
@@ -25,8 +22,7 @@ pub enum Status {
     Invalid(InvalidKind),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConflictKind {
     /// Two rows in the same parent want the same destination.
     DuplicateTarget,
@@ -37,8 +33,7 @@ pub enum ConflictKind {
     CaseOnly,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InvalidKind {
     Empty,
     IllegalChar,
@@ -46,11 +41,9 @@ pub enum InvalidKind {
     PathTooLong,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlanRow {
-    #[serde(with = "crate::bytes_serde::path")]
     pub src: PathBuf,
-    #[serde(with = "crate::bytes_serde::path")]
     pub dst: PathBuf,
     pub status: Status,
     /// Apply must stage `src` under a generated name before renaming it: a
@@ -59,7 +52,7 @@ pub struct PlanRow {
 }
 
 /// Rows in apply order, not scan or view order.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Plan {
     pub rows: Vec<PlanRow>,
 }

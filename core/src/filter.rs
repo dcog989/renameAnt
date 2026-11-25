@@ -11,13 +11,12 @@
 use std::os::unix::ffi::OsStrExt;
 
 use regex::{Regex, RegexBuilder};
-use serde::{Deserialize, Serialize};
 
 use crate::scan::{Entry, Kind};
 
 /// Which entry kinds a filter keeps: two independent bits, because the window
 /// offers a checkbox each and unticking both is a filter that keeps nothing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KindFilter {
     pub dirs: bool,
     /// Everything that is not a directory: files and symlinks.
@@ -31,7 +30,7 @@ impl Default for KindFilter {
 }
 
 /// An entry filter. Empty by default, so it keeps everything.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Filter {
     pub kinds: KindFilter,
     /// Matched against the whole basename. Empty means no pattern. A non-UTF-8
@@ -39,11 +38,9 @@ pub struct Filter {
     pub pattern: String,
     /// Match `pattern` as a regex instead of plain text. Off by default, so a
     /// plain word matches a substring of the name.
-    #[serde(default)]
     pub regex: bool,
     /// Match the pattern's case exactly. Off by default, so a name is found
     /// whatever its case.
-    #[serde(default)]
     pub case_sensitive: bool,
 }
 
