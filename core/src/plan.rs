@@ -136,6 +136,7 @@ pub fn plan<E: Borrow<Entry>>(
             rank.get(position).copied().unwrap_or(0),
             &mut selection,
             &mut spare,
+            parent_of(&entry.path),
         );
 
         let name = current.as_slice();
@@ -260,6 +261,7 @@ mod tests {
                 pattern: "^(.+)(.)$".into(),
                 replacement: "${2}${1}".into(),
                 target: Target::Whole,
+                path: false,
             }],
         );
 
@@ -281,6 +283,7 @@ mod tests {
                 pattern: ".*".into(),
                 replacement: "same".into(),
                 target: Target::Stem,
+                path: false,
             }],
         );
 
@@ -504,6 +507,7 @@ mod tests {
                     pattern: r"^IMG_(\d+)\.txt$".into(),
                     replacement: "photo-$1.jpg".into(),
                     target: Target::Whole,
+                    path: false,
                 }],
             ),
             (
@@ -537,5 +541,42 @@ mod tests {
                 plan.actionable()
             );
         }
+    }
+
+    #[test]
+    fn a_path_regex_keeps_the_basename_when_the_folder_is_unchanged() {
+        let temp = tempfile::tempdir().unwrap();
+        write(temp.path(), &["IMG_1.txt"]);
+
+        let plan = plan_dir(
+            temp.path(),
+            vec![Rule::Regex {
+                pattern: r"^(.*/)(IMG_)(\d+)\.txt$".into(),
+                replacement: "${1}${2}${3}.jpg".into(),
+                target: Target::Whole,
+                path: true,
+            }],
+        );
+
+        assert_eq!(status_of(&plan, "IMG_1.txt"), Status::Ok);
+        assert_eq!(dst_of(&plan, "IMG_1.txt"), OsStr::new("IMG_1.jpg"));
+    }
+
+    #[test]
+    fn a_path_regex_that_changes_the_folder_is_invalid() {
+        let temp = tempfile::tempdir().unwrap();
+        write(temp.path(), &["IMG_1.txt"]);
+
+        let plan = plan_dir(
+            temp.path(),
+            vec![Rule::Regex {
+                pattern: r"^.*/(IMG_\d+\.txt)$".into(),
+                replacement: "sub/$1".into(),
+                target: Target::Whole,
+                path: true,
+            }],
+        );
+
+        assert_eq!(status_of(&plan, "IMG_1.txt"), Status::Invalid(InvalidKind::IllegalChar));
     }
 }

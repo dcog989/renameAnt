@@ -216,14 +216,27 @@ fn label(ui: &mut Ui, text: &str) {
 fn fields(ui: &mut Ui, index: usize, edit: &mut RuleEdit) {
     // An off rule reads as dimmed and its fields are inert until it is back on.
     ui.add_enabled_ui(edit.enabled, |ui| {
+        let path_regex = edit.kind == RuleKind::Replace && edit.regex && edit.full_path;
         ui.horizontal_wrapped(|ui| {
-            if !matches!(edit.kind, RuleKind::Number | RuleKind::Date) {
+            if !matches!(edit.kind, RuleKind::Number | RuleKind::Date) && !path_regex {
                 target_combo(ui, index, edit);
             }
             match edit.kind {
                 RuleKind::Replace => {
                     crate::style::pointer(ui.checkbox(&mut edit.regex, "regex"));
-                    label(ui, if edit.regex { "pattern" } else { "find" });
+                    if edit.regex {
+                        crate::style::pointer(ui.checkbox(&mut edit.full_path, "full path"));
+                    }
+                    label(
+                        ui,
+                        if edit.regex && edit.full_path {
+                            "path pattern"
+                        } else if edit.regex {
+                            "pattern"
+                        } else {
+                            "find"
+                        },
+                    );
                     crate::style::field(ui, &mut edit.value, FIELD_WIDTH)
                         .accessible_name(name(index, "find"));
                     label(ui, "replace");
@@ -348,6 +361,9 @@ fn target_combo(ui: &mut Ui, index: usize, edit: &mut RuleEdit) {
 /// The one thing a rule type does that the fields cannot show on their own.
 fn hint(ui: &mut Ui, edit: &RuleEdit) {
     let text = match edit.kind {
+        RuleKind::Replace if edit.regex && edit.full_path => {
+            "the pattern sees the path as listed; its result must stay in the same folder"
+        }
         RuleKind::Replace if edit.regex => "a group is $1",
         RuleKind::Replace => "byte for byte, so this one also reaches a non-UTF-8 name",
         RuleKind::Remove => "characters, so UTF-8 names only; the `to` character is kept",

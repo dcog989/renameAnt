@@ -499,6 +499,7 @@ mod tests {
             pattern: "^(.+)(.)$".into(),
             replacement: "${2}${1}".into(),
             target: Target::Whole,
+            path: false,
         }];
 
         let report = apply(&fixture.plan(rules), &fixture.options).expect("apply");
@@ -548,6 +549,7 @@ mod tests {
             pattern: "^(.+)(.)$".into(),
             replacement: "${2}${1}".into(),
             target: Target::Whole,
+            path: false,
         }];
 
         let report = apply(&fixture.plan(rules), &fixture.options).expect("apply");
@@ -625,6 +627,7 @@ mod tests {
             pattern: "^(.+)(.)$".into(),
             replacement: "${2}${1}".into(),
             target: Target::Whole,
+            path: false,
         }];
         let first = apply(&fixture.plan(rules), &fixture.options).expect("apply");
 

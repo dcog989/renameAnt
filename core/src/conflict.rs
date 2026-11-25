@@ -528,6 +528,7 @@ mod tests {
                 pattern: "^(.+)(.)$".into(),
                 replacement: "${2}${1}".into(),
                 target: Target::Whole,
+                path: false,
             }],
         );
 
@@ -598,6 +599,7 @@ mod tests {
                 pattern: "^(.+)(.)$".into(),
                 replacement: "${2}${1}".into(),
                 target: Target::Whole,
+                path: false,
             }],
         );
 
@@ -687,16 +689,19 @@ mod tests {
                     pattern: "^a$".into(),
                     replacement: "ax".into(),
                     target: Target::Whole,
+                    path: false,
                 },
                 Rule::Regex {
                     pattern: "^b$".into(),
                     replacement: "a".into(),
                     target: Target::Whole,
+                    path: false,
                 },
                 Rule::Regex {
                     pattern: "^c$".into(),
                     replacement: "b".into(),
                     target: Target::Whole,
+                    path: false,
                 },
             ],
         );

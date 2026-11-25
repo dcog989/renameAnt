@@ -4,7 +4,10 @@
 //! Adding a feature means adding a variant here, not a code path in `plan` or
 //! `apply`.
 
+use std::ffi::OsStr;
 use std::fmt::Write;
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
 
 use bstr::ByteSlice;
 use jiff::ZonedDateTime;
@@ -117,6 +120,11 @@ pub enum Rule {
         pattern: String,
         replacement: String,
         target: Target,
+        /// Match the path as listed instead of the selected part of the name.
+        /// The result may only change the basename: a path that leaves its
+        /// directory is invalid rather than a move.
+        #[serde(default)]
+        path: bool,
     },
     Literal {
         #[serde(with = "crate::bytes_serde")]
@@ -182,7 +190,7 @@ pub enum RuleError {
 
 /// A rule with its regex built once per plan call, never per item.
 enum CompiledRule {
-    Regex { re: Regex, replacement: String, target: Target },
+    Regex { re: Regex, replacement: String, target: Target, path: bool },
     Literal { find: Vec<u8>, replace: Vec<u8>, target: Target },
     Case { style: CaseStyle, target: Target },
     InsertRemove { op: InsertRemoveOp, target: Target },
@@ -195,6 +203,8 @@ pub(crate) struct CompiledRuleSet {
     rules: Vec<CompiledRule>,
     /// Reused by regex replacement, which otherwise builds a `String` per item.
     expansion: String,
+    /// Reused by a path regex, which matches `parent/name` per item.
+    path: PathBuf,
 }
 
 impl RuleSet {
@@ -202,10 +212,11 @@ impl RuleSet {
         let mut rules = Vec::with_capacity(self.rules.len());
         for rule in &self.rules {
             rules.push(match rule {
-                Rule::Regex { pattern, replacement, target } => CompiledRule::Regex {
+                Rule::Regex { pattern, replacement, target, path } => CompiledRule::Regex {
                     re: Regex::new(pattern).map_err(|source| RuleError::Regex { source })?,
                     replacement: replacement.clone(),
                     target: *target,
+                    path: *path,
                 },
                 Rule::Literal { find, replace, target } => {
                     if find.is_empty() {
@@ -248,7 +259,7 @@ impl RuleSet {
                 }
             });
         }
-        Ok(CompiledRuleSet { rules, expansion: String::new() })
+        Ok(CompiledRuleSet { rules, expansion: String::new(), path: PathBuf::new() })
     }
 }
 
@@ -270,13 +281,16 @@ impl CompiledRuleSet {
         rank: usize,
         sel: &mut Vec<u8>,
         spare: &mut Vec<u8>,
+        parent: &Path,
     ) {
-        // Disjoint fields, so the expansion buffer can be reused per item.
+        // Disjoint fields, so the expansion and path buffers can be reused per
+        // item.
         let expansion = &mut self.expansion;
+        let path = &mut self.path;
         for rule in &self.rules {
             let target = rule.target();
             sel.clear();
-            if !rule.transform(name, rank, sel, expansion) {
+            if !rule.transform(name, rank, sel, expansion, parent, path) {
                 continue;
             }
             if osname::select(name, target) == sel.as_slice() {
@@ -318,9 +332,52 @@ fn date_stamp(format: DateFormat, now: &ZonedDateTime) -> String {
     }
 }
 
+/// Appends `text` with every match replaced: the same matches and the same
+/// `$1` expansion as `Regex::replace_all`, into buffers that are reused.
+fn append_replaced(
+    re: &Regex,
+    replacement: &str,
+    text: &str,
+    out: &mut Vec<u8>,
+    expansion: &mut String,
+) {
+    let mut rest = 0;
+    for captures in re.captures_iter(text) {
+        let Some(whole) = captures.get(0) else {
+            continue;
+        };
+        out.extend_from_slice(&text.as_bytes()[rest..whole.start()]);
+        expansion.clear();
+        captures.expand(replacement, expansion);
+        out.extend_from_slice(expansion.as_bytes());
+        rest = whole.end();
+    }
+    out.extend_from_slice(&text.as_bytes()[rest..]);
+}
+
+/// Keeps a path-form replacement only when it stays in the entry's directory:
+/// its basename becomes the name. A different directory keeps its slash, which
+/// `plan` rejects as an illegal character instead of moving the file.
+fn keep_in_parent(out: &mut Vec<u8>, parent: &Path) {
+    if !out.contains(&b'/') {
+        return;
+    }
+    let result = Path::new(OsStr::from_bytes(out));
+    if let (Some(dir), Some(name)) = (result.parent(), result.file_name())
+        && dir == parent
+    {
+        let name = name.to_owned();
+        out.clear();
+        out.extend_from_slice(name.as_bytes());
+    }
+}
+
 impl CompiledRule {
     fn target(&self) -> Target {
         match self {
+            // A path regex replaces the whole name: its result is the name, or
+            // a path whose basename becomes it.
+            CompiledRule::Regex { path: true, .. } => Target::Whole,
             CompiledRule::Regex { target, .. }
             | CompiledRule::Literal { target, .. }
             | CompiledRule::Case { target, .. }
@@ -340,27 +397,30 @@ impl CompiledRule {
         rank: usize,
         out: &mut Vec<u8>,
         expansion: &mut String,
+        parent: &Path,
+        path: &mut PathBuf,
     ) -> bool {
         let sel = osname::select(name, self.target());
         match self {
-            CompiledRule::Regex { re, replacement, .. } => {
-                let Ok(text) = std::str::from_utf8(sel) else {
-                    return false;
-                };
-                // The same matches and the same `$1` expansion as
-                // `Regex::replace_all`, into buffers that are reused.
-                let mut rest = 0;
-                for captures in re.captures_iter(text) {
-                    let Some(whole) = captures.get(0) else {
-                        continue;
+            CompiledRule::Regex { re, replacement, path: use_path, .. } => {
+                let text: &str = if *use_path {
+                    path.clear();
+                    path.push(parent);
+                    path.push(OsStr::from_bytes(name));
+                    let Some(text) = path.to_str() else {
+                        return false;
                     };
-                    out.extend_from_slice(&text.as_bytes()[rest..whole.start()]);
-                    expansion.clear();
-                    captures.expand(replacement, expansion);
-                    out.extend_from_slice(expansion.as_bytes());
-                    rest = whole.end();
+                    text
+                } else {
+                    let Ok(text) = std::str::from_utf8(sel) else {
+                        return false;
+                    };
+                    text
+                };
+                append_replaced(re, replacement, text, out, expansion);
+                if *use_path {
+                    keep_in_parent(out, parent);
                 }
-                out.extend_from_slice(&text.as_bytes()[rest..]);
                 true
             }
             CompiledRule::Literal { find, replace, .. } => {
@@ -547,7 +607,7 @@ mod tests {
         let mut current = name.as_bytes().to_vec();
         let mut sel = Vec::new();
         let mut spare = Vec::new();
-        compiled.apply(&mut current, rank, &mut sel, &mut spare);
+        compiled.apply(&mut current, rank, &mut sel, &mut spare, Path::new("/d"));
         String::from_utf8(current).expect("still utf-8")
     }
 
@@ -626,11 +686,12 @@ mod tests {
                     target: Target::Stem,
                 }],
                 expansion: String::new(),
+                path: PathBuf::new(),
             };
             let mut current = b"photo.jpg".to_vec();
             let mut sel = Vec::new();
             let mut spare = Vec::new();
-            compiled.apply(&mut current, 0, &mut sel, &mut spare);
+            compiled.apply(&mut current, 0, &mut sel, &mut spare, Path::new("/d"));
             String::from_utf8(current).unwrap()
         };
         assert_eq!(stamped(SequencePlace::Prefix), "20260304photo.jpg");
@@ -663,7 +724,7 @@ mod tests {
         let mut current = b"\xff\xfe".to_vec();
         let mut sel = Vec::new();
         let mut spare = Vec::new();
-        compiled.apply(&mut current, 0, &mut sel, &mut spare);
+        compiled.apply(&mut current, 0, &mut sel, &mut spare, Path::new("/d"));
         assert_eq!(current, b"\xff\xfe".to_vec());
     }
 
@@ -749,7 +810,8 @@ mod tests {
                 rules: vec![Rule::Regex {
                     pattern: "(".into(),
                     replacement: String::new(),
-                    target: Target::Whole
+                    target: Target::Whole,
+                    path: false
                 }]
             }
             .compile(),

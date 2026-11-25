@@ -15,7 +15,7 @@ Linux file / directory bulk renamer GUI. Provides fast and safe renaming with mu
 
 ### Default Rules
 
-- replace (regex toggle)
+- replace (regex toggle, optional full-path regex)
 - remove (n chars from position x to y)
 - trim (n chars from the end)
 - insert (prefix, suffix, position)

@@ -157,6 +157,8 @@ pub struct RuleEdit {
     pub replacement: String,
     /// Whether `value` is a regular expression.
     pub regex: bool,
+    /// Whether that expression matches the path as listed instead of the name.
+    pub full_path: bool,
     pub case: CaseStyle,
     pub insert: InsertKind,
     /// The character index an `InsertKind::Position` inserts at.
@@ -186,6 +188,7 @@ impl Default for RuleEdit {
             value: String::new(),
             replacement: String::new(),
             regex: false,
+            full_path: false,
             case: CaseStyle::Lower,
             insert: InsertKind::Prefix,
             at: 0,
@@ -210,6 +213,7 @@ impl RuleEdit {
             kind: self.kind,
             builtin: self.builtin,
             regex: self.regex,
+            full_path: self.full_path,
             ..RuleEdit::default()
         };
         *self == fresh
@@ -223,6 +227,7 @@ impl RuleEdit {
                 pattern: self.value.clone(),
                 replacement: self.replacement.clone(),
                 target: self.target,
+                path: self.full_path,
             },
             RuleKind::Replace => Rule::Literal {
                 find: self.value.clone().into_bytes(),
@@ -288,9 +293,10 @@ impl RuleEdit {
     pub fn from_rule(rule: &Rule, enabled: bool, builtin: bool) -> RuleEdit {
         let mut edit = RuleEdit { enabled, builtin, ..RuleEdit::default() };
         match rule {
-            Rule::Regex { pattern, replacement, target } => {
+            Rule::Regex { pattern, replacement, target, path } => {
                 edit.kind = RuleKind::Replace;
                 edit.regex = true;
+                edit.full_path = *path;
                 edit.value = pattern.clone();
                 edit.replacement = replacement.clone();
                 edit.target = *target;
@@ -435,6 +441,14 @@ mod tests {
             value: "a+".into(),
             replacement: "b".into(),
             target: Target::Stem,
+            ..RuleEdit::default()
+        });
+        round_trips(RuleEdit {
+            kind: RuleKind::Replace,
+            regex: true,
+            full_path: true,
+            value: r"^.*/(IMG_\d+)\.txt$".into(),
+            replacement: "$1.jpg".into(),
             ..RuleEdit::default()
         });
         round_trips(RuleEdit {
