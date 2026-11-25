@@ -2,7 +2,7 @@
 name = "renameant-gui"
 version.workspace = true
 edition.workspace = true
-rust-version = "1.100"
+rust-version.workspace = true
 description = "renameAnt desktop app: rule pipeline, before/after preview, apply and undo."
 repository.workspace = true
 license.workspace = true
