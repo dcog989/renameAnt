@@ -110,8 +110,11 @@ pub fn show(ui: &mut egui::Ui, model: &mut PlanModel) -> Change {
         table.body(|mut body| {
             // `rows` consumes the body, so keep its painter for the row fills: a
             // cell's own painter is clipped to the cell, which would leave the
-            // gaps between columns unpainted.
-            let painter = body.ui_mut().painter().clone();
+            // gaps between columns unpainted. The clip is grown by half a row
+            // gap so the first row's band reaches into the gap above it.
+            let spacing_y = body.ui_mut().spacing().item_spacing.y;
+            let mut painter = body.ui_mut().painter().clone();
+            painter.set_clip_rect(painter.clip_rect().expand2(egui::vec2(0.0, spacing_y / 2.0)));
             body.rows(ROW_HEIGHT, view_len, |mut row| {
                 let at = row.index();
                 let plan_index = model.view[at];
@@ -241,7 +244,7 @@ fn path_text(ui: &egui::Ui, path: &Path) -> egui::text::LayoutJob {
 /// Paints a row's status tint on one of its cells, with the table body's painter
 /// so the fill is not clipped to the cell. The rect is grown by half the cell
 /// spacing, as egui_extras grows its stripe, so the cells' fills meet without
-/// seams. Two strengths alternate with the stripes.
+/// seams and the band stays centred on its row. Two strengths alternate.
 fn row_fill(painter: &egui::Painter, ui: &egui::Ui, status: Status, row_index: usize) {
     // "no match" is the default, so it keeps the table's plain stripes.
     if status == Status::Unchanged {
