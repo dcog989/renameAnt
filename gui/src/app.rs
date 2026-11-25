@@ -93,6 +93,8 @@ pub struct App {
     stat_pending: bool,
     journal: PathBuf,
     sessions: Vec<Session>,
+    /// Which runs are open, and the renames they loaded.
+    history: history::History,
     /// The faint ant painted behind the journal when it has no history.
     logo: TextureHandle,
     /// The journal panel is shown unless the user collapses it.
@@ -140,6 +142,7 @@ impl App {
             stat_pending: false,
             journal,
             sessions,
+            history: history::History::default(),
             logo: logo::texture(&cc.egui_ctx),
             journal_open: true,
             overwrite: false,
@@ -526,7 +529,9 @@ impl App {
             if self.sessions.is_empty() {
                 logo::paint(ui, &self.logo);
             }
-            if let Some(session) = history::show(ui, &self.sessions, self.busy) {
+            if let Some(session) =
+                history::show(ui, &self.sessions, self.busy, &self.journal, &mut self.history)
+            {
                 self.overlay = Some(Overlay::ConfirmUndo(session));
             }
         });
