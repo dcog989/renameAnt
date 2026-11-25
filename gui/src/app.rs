@@ -113,6 +113,12 @@ impl App {
             Err(error) => (default_rules(), format!("the saved rules could not be read: {error}")),
         };
         let journal = journal::default_path().unwrap_or_else(|_| PathBuf::from(FALLBACK_JOURNAL));
+        if let Err(error) = Journal::prune(&journal) {
+            if !status.is_empty() {
+                status.push(' ');
+            }
+            status.push_str(&format!("the journal could not be pruned: {error}"));
+        }
         let sessions = Journal::sessions(&journal).unwrap_or_default();
         let interrupted = sessions.iter().filter(|session| session.interrupted).count();
         if interrupted > 0 {
@@ -500,7 +506,7 @@ impl App {
                 .add_enabled(
                     ready,
                     egui::Button::new(
-                        egui::RichText::new("Rename The Content").size(ACTION_TEXT_SIZE),
+                        egui::RichText::new("Rename Now").size(ACTION_TEXT_SIZE),
                     ),
                 )
                 .on_hover_text("nothing is written before this")

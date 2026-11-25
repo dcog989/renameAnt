@@ -15,6 +15,7 @@ use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use rustix::fs::{FlockOperation, flock, fsync};
+use rustix::io::Errno;
 use serde::{Deserialize, Serialize};
 
 use crate::bytes_serde;
@@ -24,6 +25,9 @@ const JOURNAL_FILE: &str = "journal.jsonl";
 const STATE_DIR: &str = "renameant";
 /// Bytes read per backward step when locating a run's renames.
 const TAIL_CHUNK: usize = 64 * 1024;
+/// Runs older than this are dropped at startup.
+const RETENTION_DAYS: u64 = 60;
+const SECONDS_PER_DAY: u64 = 24 * 60 * 60;
 
 pub type RunId = u64;
 
@@ -288,6 +292,87 @@ impl Journal {
         Ok(sessions)
     }
 
+    /// Drops runs older than the retention window, keeping the newest run. Only
+    /// an oldest prefix goes, so the highest run id stays in the file and
+    /// [`Journal::next_run_id`] can never reuse one.
+    ///
+    /// Rewrites through a temporary file, so a crash leaves the old journal
+    /// intact, and refuses a journal with a corrupt line rather than drop what
+    /// it cannot read. The truncated final line a crash leaves is dropped.
+    /// Returns the runs removed.
+    pub fn prune(path: &Path) -> io::Result<usize> {
+        let mut file = match OpenOptions::new().read(true).open(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(0),
+            Err(error) => return Err(error),
+        };
+        // Nothing may append between the read and the rename that replaces the
+        // file. The lock lives on the old inode; that is enough because this
+        // runs at startup, before the journal is opened for a run.
+        match flock(&file, FlockOperation::NonBlockingLockExclusive) {
+            // Another instance is mid-run. Leave its journal alone; the next
+            // start prunes.
+            Err(Errno::WOULDBLOCK) => return Ok(0),
+            result => result?,
+        }
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+
+        // Line ranges, so the rewrite copies the original bytes instead of
+        // re-encoding paths. Anything after the last newline is the truncated
+        // line a crash leaves, and is dropped.
+        let mut lines: Vec<(usize, usize, RecordMeta)> = Vec::new();
+        let mut offset = 0;
+        while let Some(at) = bytes[offset..].iter().position(|&byte| byte == b'\n') {
+            let end = offset + at + 1;
+            let text = std::str::from_utf8(&bytes[offset..end - 1]).map_err(invalid_line)?;
+            lines.push((offset, end, parse_meta(text)?));
+            offset = end;
+        }
+
+        let newest_run = lines
+            .iter()
+            .filter(|(_, _, meta)| meta.record == RecordKind::Begin)
+            .map(|(_, _, meta)| meta.run)
+            .max();
+        let Some(newest_run) = newest_run else { return Ok(0) };
+
+        let cutoff = now().saturating_sub(RETENTION_DAYS * SECONDS_PER_DAY);
+        let cutoff_run = lines
+            .iter()
+            .filter(|(_, _, meta)| meta.record == RecordKind::Begin)
+            .filter(|(_, _, meta)| meta.run == newest_run || meta.at >= cutoff)
+            .map(|(_, _, meta)| meta.run)
+            .min()
+            .unwrap_or(newest_run);
+
+        let Some(first_kept) = lines.iter().position(|(_, _, meta)| meta.run >= cutoff_run) else {
+            return Ok(0);
+        };
+        if first_kept == 0 {
+            return Ok(0);
+        }
+        let dropped = lines[..first_kept]
+            .iter()
+            .filter(|(_, _, meta)| meta.record == RecordKind::Begin)
+            .count();
+
+        let temp = path.with_extension("jsonl.tmp");
+        let mut out = File::create(&temp)?;
+        // Up to the last complete line: the truncated tail is not copied.
+        let end = lines.last().map_or(0, |(_, end, _)| *end);
+        let result = out.write_all(&bytes[lines[first_kept].0..end]).and_then(|()| {
+            out.flush()?;
+            Ok(fsync(&out)?)
+        });
+        drop(out);
+        if let Err(error) = result.and_then(|()| std::fs::rename(&temp, path)) {
+            let _ = std::fs::remove_file(&temp);
+            return Err(error);
+        }
+        Ok(dropped)
+    }
+
     /// The completed renames of one run, in the order they happened.
     ///
     /// A run's `begin` precedes its `rename` records in append order, so the file
@@ -403,6 +488,18 @@ mod tests {
 
     fn rename(run: RunId, from: PathBuf, to: PathBuf) -> JournalRecord {
         JournalRecord::Rename { run, from, to }
+    }
+
+    fn begin(journal: &mut Journal, run: RunId, at: u64) {
+        journal
+            .append(&JournalRecord::Begin { run, at, planned: 1, overwrite: false, undo_of: None })
+            .expect("append");
+    }
+
+    fn end(journal: &mut Journal, run: RunId) {
+        journal
+            .append(&JournalRecord::End { run, at: 0, outcome: RunOutcome::Completed })
+            .expect("append");
     }
 
     #[test]
@@ -578,5 +675,97 @@ mod tests {
         drop(file);
 
         assert_eq!(Journal::renames(&path, 1).expect("renames").len(), 1);
+    }
+
+    #[test]
+    fn prune_drops_old_runs_and_keeps_the_ids_rising() {
+        let (_temp, path) = temp_journal();
+        let mut journal = Journal::open(path.clone()).expect("open");
+        begin(&mut journal, 1, now() - 61 * SECONDS_PER_DAY);
+        journal
+            .append(&rename(1, PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")))
+            .expect("append");
+        end(&mut journal, 1);
+        begin(&mut journal, 2, now() - SECONDS_PER_DAY);
+        journal
+            .append(&rename(2, PathBuf::from("/tmp/c"), PathBuf::from("/tmp/d")))
+            .expect("append");
+        end(&mut journal, 2);
+        drop(journal);
+
+        assert_eq!(Journal::prune(&path).expect("prune"), 1);
+
+        let sessions = Journal::sessions(&path).expect("sessions");
+        assert_eq!(sessions.iter().map(|session| session.run).collect::<Vec<_>>(), vec![2]);
+        // The dropped run was the oldest, so the kept high-water mark is
+        // unchanged and the next id cannot repeat one.
+        assert_eq!(Journal::next_run_id(&path).expect("next"), 3);
+        assert_eq!(Journal::renames(&path, 2).expect("renames").len(), 1);
+    }
+
+    #[test]
+    fn prune_keeps_the_newest_run_even_when_it_is_ancient() {
+        let (_temp, path) = temp_journal();
+        let mut journal = Journal::open(path.clone()).expect("open");
+        let old = now() - 90 * SECONDS_PER_DAY;
+        begin(&mut journal, 1, old);
+        end(&mut journal, 1);
+        begin(&mut journal, 2, old);
+        journal
+            .append(&rename(2, PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")))
+            .expect("append");
+        end(&mut journal, 2);
+        drop(journal);
+
+        assert_eq!(Journal::prune(&path).expect("prune"), 1);
+
+        let sessions = Journal::sessions(&path).expect("sessions");
+        assert_eq!(sessions.iter().map(|session| session.run).collect::<Vec<_>>(), vec![2]);
+        assert_eq!(Journal::next_run_id(&path).expect("next"), 3);
+        assert_eq!(Journal::renames(&path, 2).expect("renames").len(), 1);
+    }
+
+    #[test]
+    fn prune_leaves_a_journal_within_retention_untouched() {
+        let (_temp, path) = temp_journal();
+        let mut journal = Journal::open(path.clone()).expect("open");
+        begin(&mut journal, 1, now() - SECONDS_PER_DAY);
+        end(&mut journal, 1);
+        begin(&mut journal, 2, now());
+        end(&mut journal, 2);
+        drop(journal);
+        let before = std::fs::read(&path).expect("read");
+
+        assert_eq!(Journal::prune(&path).expect("prune"), 0);
+        assert_eq!(std::fs::read(&path).expect("read"), before);
+    }
+
+    #[test]
+    fn prune_refuses_a_corrupt_line_and_leaves_the_file_alone() {
+        let (_temp, path) = temp_journal();
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+        let corrupt = b"nonsense\n";
+        std::fs::write(&path, corrupt).expect("write");
+
+        assert!(Journal::prune(&path).is_err());
+        assert_eq!(std::fs::read(&path).expect("read"), corrupt.as_slice());
+    }
+
+    #[test]
+    fn prune_drops_the_truncated_final_line() {
+        let (_temp, path) = temp_journal();
+        let mut journal = Journal::open(path.clone()).expect("open");
+        begin(&mut journal, 1, now() - 61 * SECONDS_PER_DAY);
+        end(&mut journal, 1);
+        begin(&mut journal, 2, now());
+        end(&mut journal, 2);
+        drop(journal);
+        let mut file = OpenOptions::new().append(true).open(&path).expect("reopen");
+        file.write_all(b"{\"record\":\"ren").expect("append half a line");
+        drop(file);
+
+        assert_eq!(Journal::prune(&path).expect("prune"), 1);
+        assert!(std::fs::read(&path).expect("read").ends_with(b"\n"));
+        assert_eq!(Journal::sessions(&path).expect("sessions").len(), 1);
     }
 }
