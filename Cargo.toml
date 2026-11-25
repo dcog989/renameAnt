@@ -5,7 +5,7 @@ members = ["core", "gui"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.99"
+rust-version = "1.100"
 repository = "https://github.com/Bubba/renameAnt"
 license = "GPL-3.0-or-later"
 
@@ -14,9 +14,7 @@ renameant-core = { path = "core" }
 
 base64 = "0.23"
 bstr = "1"
-# No wgpu: GL/EGL comes from the host, and wgpu is a large tree the
-# AppImage does not need. system fonts stay on: this window shows arbitrary
-# filenames, and the bundled fonts have no CJK.
+# No wgpu: host GL/EGL is enough. system_fonts: bundled fonts have no CJK.
 eframe = {
   version = "0.37",
   default-features = false,
@@ -32,23 +30,18 @@ eframe = {
   ]
 }
 egui = { version = "0.37", features = ["monochrome_emoji_fonts"] }
-# No default features: they pull a mime-type guesser only the image loaders use.
-# `serde` lets the table keep its column widths in egui's persisted memory.
+# Default features pull a mime guesser only the image loaders use; serde persists column widths.
 egui_extras = { version = "0.37", default-features = false, features = ["serde"] }
 regex = "1"
-# The file browser is the desktop portal's, not GTK's: the AppImage needs no
-# libgtk, only a running xdg-desktop-portal (KDE ships one). The portal backend
-# is rfd's default feature set.
-rfd = "0.16"
+# Portal backend (rfd's default): no libgtk in the AppImage, only xdg-desktop-portal.
+rfd = "0.18"
 rustix = { version = "1", features = ["fs"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"
 thiserror = "2"
 unicode-normalization = "0.1"
-# eframe does not re-export winit's features, so the two pieces of `winit/default`
-# it leaves out are asked for here: client-side decorations on Wayland, and
-# dlopen'ing libwayland rather than linking it.
+# eframe does not re-export winit's features: Wayland CSD, and dlopen'ing libwayland.
 winit = {
   version = "0.30",
   default-features = false,
@@ -57,3 +50,10 @@ winit = {
     "wayland-dlopen",
   ]
 }
+
+[profile.release]
+opt-level = 3
+strip = true
+lto = "thin"
+panic = "abort"
+codegen-units = 1
