@@ -115,8 +115,17 @@ impl App {
         style::apply(&cc.egui_ctx);
         let config_path = config::default_path().unwrap_or_else(|_| PathBuf::from(FALLBACK_CONFIG));
         let (edits, mut status) = match config::load(&config_path) {
-            Ok(edits) if !edits.is_empty() => (with_defaults(edits), String::new()),
-            Ok(_) => (default_rules(), String::new()),
+            Ok((edits, unsupported)) => {
+                let mut status = unsupported_rules(&unsupported);
+                let edits = with_defaults(edits);
+                // Heal the file once, so the same drop is not reported every start.
+                if !unsupported.is_empty()
+                    && let Err(error) = config::save(&config_path, &edits)
+                {
+                    status.push_str(&format!("; the cleaned rules could not be saved: {error}"));
+                }
+                (edits, status)
+            }
             Err(error) => (default_rules(), format!("the saved rules could not be read: {error}")),
         };
         let journal = journal::default_path().unwrap_or_else(|_| PathBuf::from(FALLBACK_JOURNAL));
@@ -133,7 +142,9 @@ impl App {
                 status.push(' ');
             }
             status.push_str(&format!(
-                "{interrupted} interrupted run(s) in the journal: reverse them from the journal"
+                "{interrupted} interrupted {} in the journal: reverse {} from the journal",
+                if interrupted == 1 { "run" } else { "runs" },
+                if interrupted == 1 { "it" } else { "them" },
             ));
         }
         App {
@@ -654,6 +665,16 @@ impl App {
         if keep {
             self.overlay = Some(overlay);
         }
+    }
+}
+
+/// What to say about saved rules this version could not read.
+fn unsupported_rules(tags: &[String]) -> String {
+    let names = format!("\"{}\"", tags.join("\", \""));
+    match tags.len() {
+        0 => String::new(),
+        1 => format!("saved rule {names} is not supported, so it was removed"),
+        _ => format!("saved rules {names} are not supported, so they were removed"),
     }
 }
 
