@@ -19,7 +19,7 @@ const MIN_LIST_HEIGHT: f32 = 120.0;
 const FIELD_WIDTH: f32 = 120.0;
 /// Vertical gap between the lines of one wrapped field row.
 const ICON_SIZE: f32 = 30.0;
-/// Border width of an on rule's card.
+/// Border width of every rule's card, on or off, so toggling cannot resize it.
 const CARD_BORDER_WIDTH: f32 = 1.5;
 /// Upper bounds keep a drag from producing a name that cannot exist anyway.
 const MAX_COUNT: u64 = 10_000;
@@ -82,11 +82,10 @@ pub fn show(ui: &mut Ui, edits: &mut Vec<RuleEdit>) {
 /// when it is off.
 fn card_frame(ui: &Ui, enabled: bool) -> Frame {
     let frame = crate::style::group_frame(ui.style());
-    if enabled {
-        frame.stroke(Stroke::new(CARD_BORDER_WIDTH, crate::style::ACCENT_BRIGHT))
-    } else {
-        frame
-    }
+    // The stroke width is part of the frame's margin, so both states keep it and
+    // only the colour changes; otherwise toggling shifts every card below.
+    let color = if enabled { crate::style::ACCENT_BRIGHT } else { frame.stroke.color };
+    frame.stroke(Stroke::new(CARD_BORDER_WIDTH, color))
 }
 
 fn card(
