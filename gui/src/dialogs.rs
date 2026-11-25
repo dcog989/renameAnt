@@ -4,6 +4,8 @@
 //! skipped, and the overwrite opt-in is called out as irrecoverable. None of
 //! this writes anything; it only reports the user's choice back to the app.
 
+use std::path::{Path, PathBuf};
+
 use egui::Ui;
 use renameant_core::apply::{ApplyReport, ApplyRow, Outcome};
 use renameant_core::journal::{RunId, Session};
@@ -20,11 +22,12 @@ const REPORT_ROWS_SHOWN: usize = 200;
 const REPORT_HEIGHT: f32 = 260.0;
 
 /// What the user chose. [`Choice::None`] leaves the modal open.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum Choice {
     None,
     Apply,
-    Undo(RunId),
+    UndoRun(RunId),
+    UndoRow { run: RunId, from: PathBuf, to: PathBuf },
     Close,
 }
 
@@ -75,7 +78,17 @@ pub fn confirm_undo(ui: &mut Ui, session: &Session) -> Choice {
     if !note.is_empty() {
         ui.colored_label(WARNING, note);
     }
-    buttons(ui, "Undo", Choice::Undo(run))
+    buttons(ui, "Undo", Choice::UndoRun(run))
+}
+
+/// One row's undo: the inverse of a single rename, with the rest of the run left
+/// as it is.
+pub fn confirm_undo_row(ui: &mut Ui, run: RunId, from: &Path, to: &Path) -> Choice {
+    ui.heading(format!("Undo 1 rename in run {run}"));
+    ui.monospace(format!("{} → {}", format::file_text(to), format::file_text(from)))
+        .on_hover_text(format!("{} → {}", to.display(), from.display()));
+    ui.label("This reverses that one rename. Every other row of the run stays as it is.");
+    buttons(ui, "Undo", Choice::UndoRow { run, from: from.to_path_buf(), to: to.to_path_buf() })
 }
 
 pub fn show_report(ui: &mut Ui, title: &str, report: &ApplyReport, rest: usize) -> Choice {

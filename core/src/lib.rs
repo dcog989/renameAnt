@@ -15,7 +15,9 @@ pub mod plan;
 pub mod rule;
 pub mod scan;
 
-pub use apply::{ApplyError, ApplyOptions, ApplyReport, ApplyRow, Outcome, apply, undo};
+pub use apply::{
+    ApplyError, ApplyOptions, ApplyReport, ApplyRow, Outcome, apply, is_staged, undo, undo_one,
+};
 pub use filter::{CompiledFilter, Filter, FilterError, KindFilter};
 pub use journal::{Journal, JournalRecord, RunId, RunOutcome, Session};
 pub use osname::{NAME_MAX, PATH_MAX};

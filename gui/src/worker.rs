@@ -25,6 +25,8 @@ pub enum Job {
     Stat(Vec<PathBuf>),
     Apply(Box<Plan>, ApplyOptions),
     Undo(ApplyOptions, RunId),
+    /// One recorded rename of a run: `(from, to)` as the run wrote it.
+    UndoOne(ApplyOptions, RunId, PathBuf, PathBuf),
 }
 
 /// What the file browser is asked for. It opens on a thread of its own, so the
@@ -121,6 +123,10 @@ fn serve(jobs: Receiver<Job>, done: Sender<Done>) {
             }
             Job::Undo(options, run) => {
                 let result = apply::undo(&options, run);
+                Done::Ran { undo_of: Some(run), sessions: sessions_of(&options), result }
+            }
+            Job::UndoOne(options, run, from, to) => {
+                let result = apply::undo_one(&options, run, &from, &to);
                 Done::Ran { undo_of: Some(run), sessions: sessions_of(&options), result }
             }
         };

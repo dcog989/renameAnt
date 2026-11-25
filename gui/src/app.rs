@@ -52,6 +52,11 @@ pub(crate) const DANGER: Color32 = Color32::from_rgb(222, 95, 85);
 enum Overlay {
     ConfirmApply,
     ConfirmUndo(Session),
+    ConfirmUndoRow {
+        run: RunId,
+        from: PathBuf,
+        to: PathBuf,
+    },
     Report {
         title: String,
         report: ApplyReport,
@@ -312,6 +317,13 @@ impl App {
         self.dispatch(Job::Undo(options, run));
     }
 
+    fn start_undo_row(&mut self, run: RunId, from: PathBuf, to: PathBuf) {
+        self.status = format!("undoing one rename in run {run}…");
+        let options =
+            ApplyOptions { batched_sync: self.fast, ..ApplyOptions::new(self.journal.clone()) };
+        self.dispatch(Job::UndoOne(options, run, from, to));
+    }
+
     fn poll(&mut self, ctx: &egui::Context) {
         while let Some(done) = self.worker.try_recv() {
             self.outstanding = self.outstanding.saturating_sub(1);
@@ -505,9 +517,7 @@ impl App {
             if ui
                 .add_enabled(
                     ready,
-                    egui::Button::new(
-                        egui::RichText::new("Rename Now").size(ACTION_TEXT_SIZE),
-                    ),
+                    egui::Button::new(egui::RichText::new("Rename Now").size(ACTION_TEXT_SIZE)),
                 )
                 .on_hover_text("nothing is written before this")
                 .clicked()
@@ -538,10 +548,15 @@ impl App {
             if self.sessions.is_empty() {
                 logo::paint(ui, &self.logo);
             }
-            if let Some(session) =
+            if let Some(undo) =
                 history::show(ui, &self.sessions, self.busy, &self.journal, &mut self.history)
             {
-                self.overlay = Some(Overlay::ConfirmUndo(session));
+                self.overlay = Some(match undo {
+                    history::Undo::Run(session) => Overlay::ConfirmUndo(session),
+                    history::Undo::Row { run, from, to } => {
+                        Overlay::ConfirmUndoRow { run, from, to }
+                    }
+                });
             }
         });
     }
@@ -584,6 +599,9 @@ impl App {
                     dialogs::confirm_apply(ui, &self.model, self.overwrite, self.fast)
                 }
                 Overlay::ConfirmUndo(session) => dialogs::confirm_undo(ui, session),
+                Overlay::ConfirmUndoRow { run, from, to } => {
+                    dialogs::confirm_undo_row(ui, *run, from, to)
+                }
                 Overlay::Report { title, report, rest } => {
                     dialogs::show_report(ui, title, report, *rest)
                 }
@@ -591,7 +609,8 @@ impl App {
             match choice {
                 Choice::None => {}
                 Choice::Apply => self.start_apply(),
-                Choice::Undo(run) => self.start_undo(run),
+                Choice::UndoRun(run) => self.start_undo(run),
+                Choice::UndoRow { run, from, to } => self.start_undo_row(run, from, to),
                 Choice::Close => keep = false,
             }
         });

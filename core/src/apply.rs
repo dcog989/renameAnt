@@ -263,10 +263,41 @@ pub fn apply(plan: &Plan, options: &ApplyOptions) -> io::Result<ApplyReport> {
 pub fn undo(options: &ApplyOptions, target: RunId) -> io::Result<ApplyReport> {
     // Lock before reading: the lock is held for the whole undo, so a concurrent
     // apply cannot claim this undo's run id.
-    let mut journal = Journal::open_syncing(options.journal.clone(), options.sync_every())?;
+    let journal = Journal::open_syncing(options.journal.clone(), options.sync_every())?;
     let mut completed = Journal::renames(&options.journal, target)?;
     completed.reverse();
+    reverse(options, journal, target, completed)
+}
 
+/// Reverses one recorded rename of `target`, leaving the rest of the run alone.
+///
+/// The pair must be one the run recorded, so a stale row can never move a file
+/// the run never renamed. The undo is a run of its own and can be undone.
+pub fn undo_one(
+    options: &ApplyOptions,
+    target: RunId,
+    from: &Path,
+    to: &Path,
+) -> io::Result<ApplyReport> {
+    let journal = Journal::open_syncing(options.journal.clone(), options.sync_every())?;
+    let recorded = Journal::renames(&options.journal, target)?
+        .into_iter()
+        .any(|(row_from, row_to)| row_from.as_path() == from && row_to.as_path() == to);
+    if !recorded {
+        let message = format!("run {target} did not rename {} to {}", from.display(), to.display());
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, message));
+    }
+    reverse(options, journal, target, vec![(from.to_path_buf(), to.to_path_buf())])
+}
+
+/// Appends a run that reverses `completed` in order. The caller holds the lock
+/// on the journal in `journal`.
+fn reverse(
+    options: &ApplyOptions,
+    mut journal: Journal,
+    target: RunId,
+    completed: Vec<(PathBuf, PathBuf)>,
+) -> io::Result<ApplyReport> {
     let run = Journal::next_run_id(&options.journal)?;
     journal.append(&JournalRecord::Begin {
         run,
@@ -287,6 +318,12 @@ pub fn undo(options: &ApplyOptions, target: RunId) -> io::Result<ApplyReport> {
     journal.append(&JournalRecord::End { run, at: now(), outcome: report.outcome() })?;
     journal.sync()?;
     Ok(report)
+}
+
+/// Whether `path` carries a name [`stage`] generated. Such a row is one half of
+/// a rename that must be reversed as a whole, never alone.
+pub fn is_staged(path: &Path) -> bool {
+    path.file_name().is_some_and(|name| name.as_encoded_bytes().starts_with(TEMP_PREFIX.as_bytes()))
 }
 
 /// The result of one rename.
@@ -649,6 +686,52 @@ mod tests {
         assert_eq!(undone.renamed(), 0);
         assert_eq!(undone.failed(), 1);
         assert!(!fixture.exists("a"));
+    }
+
+    #[test]
+    fn undo_one_reverses_only_that_row() {
+        let fixture = fixture(&["a", "b"]);
+        let first = apply(&fixture.plan(prefix("p-")), &fixture.options).expect("apply");
+        let row = Journal::renames(&fixture.options.journal, first.run)
+            .expect("renames")
+            .into_iter()
+            .find(|(from, _)| from == &fixture.dir.join("a"))
+            .expect("the row for a");
+
+        let undone = undo_one(&fixture.options, first.run, &row.0, &row.1).expect("undo one");
+
+        assert_eq!(undone.renamed(), 1);
+        assert!(fixture.exists("a"), "the chosen row is back");
+        assert!(fixture.exists("p-b"), "the other row is untouched");
+        assert!(!fixture.exists("p-a"));
+        // The undo is a run of its own, naming the run it partly reversed.
+        let sessions = Journal::sessions(&fixture.options.journal).expect("sessions");
+        assert_eq!(sessions.len(), 2);
+        assert_eq!(sessions[1].undo_of, Some(first.run));
+        assert_eq!(sessions[0].renames, 2, "the original run keeps both records");
+    }
+
+    #[test]
+    fn undo_one_refuses_a_pair_the_run_never_recorded() {
+        let fixture = fixture(&["a"]);
+        let first = apply(&fixture.plan(prefix("p-")), &fixture.options).expect("apply");
+
+        let refused =
+            undo_one(&fixture.options, first.run, Path::new("/tmp/x"), Path::new("/tmp/y"));
+
+        assert!(refused.is_err());
+        assert_eq!(
+            Journal::sessions(&fixture.options.journal).expect("sessions").len(),
+            1,
+            "a refused undo writes no run"
+        );
+        assert!(fixture.exists("p-a"));
+    }
+
+    #[test]
+    fn a_staged_name_is_recognized_so_it_is_never_undone_alone() {
+        assert!(is_staged(Path::new("/tmp/.renameant-tmp-1-0-0")));
+        assert!(!is_staged(Path::new("/tmp/a")));
     }
 
     #[test]
