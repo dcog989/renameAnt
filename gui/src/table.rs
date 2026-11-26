@@ -60,13 +60,19 @@ pub fn show(ui: &mut egui::Ui, model: &mut PlanModel) -> Change {
     // so neither leaves an unpainted strip after the last column.
     let mut content_width = 0.0;
     let row_gap = ui.spacing().item_spacing.y;
-    let area = egui::ScrollArea::horizontal().auto_shrink([true, false]).show(ui, |ui| {
+    // The table ends after its last row: both axes follow the content, and no
+    // scroll-area floor pads the height back out to the panel.
+    let scroll = egui::ScrollArea::horizontal().auto_shrink([true, true]).min_scrolled_height(0.0);
+    let area = scroll.show(ui, |ui| {
         // egui_extras draws a column's separator only when the column can be
         // dragged, so the fixed columns' separators are painted here instead.
         let mut fixed_edges: Vec<f32> = Vec::new();
         let table = TableBuilder::new(ui)
             .striped(true)
             .resizable(true)
+            // Fit the rows: no 200 pt floor, and no filling the panel height.
+            .auto_shrink([true, true])
+            .min_scrolled_height(0.0)
             // Cells sense clicks so a row's context menu can open; they are not
             // keyboard focus stops, because the Remove chip is the row's action.
             .sense(egui::Sense::CLICK)
@@ -205,8 +211,13 @@ pub fn show(ui: &mut egui::Ui, model: &mut PlanModel) -> Change {
     if let Some(header_bottom) = header_bottom {
         let stroke = ui.visuals().widgets.noninteractive.bg_stroke;
         let viewport = area.inner_rect;
+        // `inner_rect` is the available viewport, not the space the content took,
+        // so cap the frame at the content height. The last row's tint reaches
+        // half a row gap past it, as the first row's does under the title rule,
+        // so the frame encloses that too.
+        let height = (area.content_size.y + row_gap / 2.0).min(viewport.height());
         let width = content_width.min(viewport.width());
-        let rect = egui::Rect::from_min_size(viewport.min, egui::vec2(width, viewport.height()));
+        let rect = egui::Rect::from_min_size(viewport.min, egui::vec2(width, height));
         // The rule stops at the frame's side lines, which are drawn over its
         // ends so it cannot poke out of the table.
         ui.painter()

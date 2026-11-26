@@ -825,29 +825,32 @@ impl App {
             .frame(style::panel_body(ui.style()))
             .show(ui, |ui| self.footer(ui));
         style::panel_body(ui.style()).show(ui, |ui| {
-            // The count reads as the table's own footer, so it is a panel of its
-            // own: the table takes the rest without this caller measuring a line.
+            self.top_row(ui);
+            self.filter_row(ui);
+            self.notices(ui);
+            // The count is the table's footer: it sits under the rows, and under
+            // the table's viewport when the rows overrun it. Its line is reserved
+            // so a long table cannot push it out of the panel.
             let (shown, scanned) = (self.model.plan.rows.len(), self.model.entries.len());
             let text = if self.model.filter.is_inactive() {
                 crate::format::plural(shown, "entry", "entries")
             } else {
                 format!("{shown} of {}", crate::format::plural(scanned, "entry", "entries"))
             };
-            egui::Panel::bottom("renameant-count")
-                .frame(egui::Frame::new())
-                .show_separator_line(false)
-                .show(ui, |ui| ui.label(egui::RichText::new(text).weak()));
-            self.top_row(ui);
-            self.filter_row(ui);
-            self.notices(ui);
-            let change = table::show(ui, &mut self.model);
-            if let Some(path) = change.removed {
-                // A path that came from the picked list leaves it too, so the
-                // next scan does not bring the row back.
-                self.added.retain(|added| added != &path);
-                self.model.removed.insert(path);
-                self.replan();
-            }
+            let label_height = ui.text_style_height(&egui::TextStyle::Body);
+            let footer = label_height + ui.spacing().item_spacing.y;
+            let size = egui::vec2(ui.available_width(), (ui.available_height() - footer).max(0.0));
+            ui.allocate_ui_with_layout(size, egui::Layout::top_down(egui::Align::Min), |ui| {
+                let change = table::show(ui, &mut self.model);
+                if let Some(path) = change.removed {
+                    // A path that came from the picked list leaves it too, so the
+                    // next scan does not bring the row back.
+                    self.added.retain(|added| added != &path);
+                    self.model.removed.insert(path);
+                    self.replan();
+                }
+            });
+            ui.label(egui::RichText::new(text).weak());
         });
     }
 
