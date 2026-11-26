@@ -41,19 +41,7 @@ struct LoadedRules {
 /// `$XDG_CONFIG_HOME/renameant/rules.json`, default
 /// `~/.config/renameant/rules.json`.
 pub fn default_path() -> io::Result<PathBuf> {
-    let base = match std::env::var_os("XDG_CONFIG_HOME") {
-        Some(value) if !value.is_empty() => PathBuf::from(value),
-        _ => {
-            let home = std::env::var_os("HOME").ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::NotFound,
-                    "neither XDG_CONFIG_HOME nor HOME is set, so the rules have no location",
-                )
-            })?;
-            PathBuf::from(home).join(".config")
-        }
-    };
-    Ok(base.join(CONFIG_DIR).join(CONFIG_FILE))
+    Ok(renameant_core::xdg::base("XDG_CONFIG_HOME", ".config")?.join(CONFIG_DIR).join(CONFIG_FILE))
 }
 
 /// The saved rules, in order, and the tags of the rules this version could not

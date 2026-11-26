@@ -149,26 +149,7 @@ struct LockedJournal {
 /// `$XDG_STATE_HOME/renameant/journal.jsonl`, default
 /// `~/.local/state/renameant/journal.jsonl`.
 pub fn default_path() -> io::Result<PathBuf> {
-    let base = match std::env::var_os("XDG_STATE_HOME") {
-        Some(value) if !value.is_empty() && Path::new(&value).is_absolute() => PathBuf::from(value),
-        _ => {
-            let home = std::env::var_os("HOME").ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::NotFound,
-                    "neither XDG_STATE_HOME nor HOME is set, so the journal has no location",
-                )
-            })?;
-            let home = PathBuf::from(home);
-            if !home.is_absolute() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "HOME is not an absolute path, so the journal has no stable location",
-                ));
-            }
-            home.join(".local").join("state")
-        }
-    };
-    Ok(base.join(STATE_DIR).join(JOURNAL_FILE))
+    Ok(crate::xdg::base("XDG_STATE_HOME", ".local/state")?.join(STATE_DIR).join(JOURNAL_FILE))
 }
 
 /// Locks a file beside the journal. The journal itself is replaced by prune

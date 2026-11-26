@@ -14,3 +14,4 @@ pub mod osname;
 pub mod plan;
 pub mod rule;
 pub mod scan;
+pub mod xdg;
