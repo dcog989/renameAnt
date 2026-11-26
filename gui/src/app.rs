@@ -618,7 +618,7 @@ impl App {
                         egui::Checkbox::new(&mut self.recursive, "Subdirectories"),
                     )
                     .on_hover_text(
-                        "rename inside every subdirectory too; scanned on the next scan",
+                        "Also add subdirectories",
                     ),
                 )
                 .changed()
@@ -627,8 +627,7 @@ impl App {
                 }
                 style::pointer(
                     ui.add(egui::Checkbox::new(&mut self.fast, "Fast mode")).on_hover_text(
-                        "read sizes and times only when you sort by them, and sync the journal \
-                         once per batch instead of once per rename",
+                        "Do not read sizes and times on import, allows for faster processing",
                     ),
                 );
                 if self.busy && !self.browsing {
@@ -698,11 +697,11 @@ impl App {
                 .accessible_name("Filter by name");
             style::pointer(
                 ui.checkbox(&mut self.model.filter.regex, "regex")
-                    .on_hover_text("match the name field as a regular expression, not plain text"),
+                    .on_hover_text("Enable regular expression matching"),
             );
             style::pointer(
                 ui.checkbox(&mut self.model.filter.case_sensitive, "case sensitive")
-                    .on_hover_text("match the name field's case exactly"),
+                    .on_hover_text("Enable exact case matching"),
             );
             ui.separator();
             // The headers are the sort control; this is the way back to the
@@ -719,7 +718,7 @@ impl App {
             let clear = !self.added.is_empty();
             if ui
                 .add_enabled(clear, egui::Button::new("Clear Content"))
-                .on_hover_text("forget every picked path and clear the preview")
+                .on_hover_text("Clear the imported content list")
                 .clicked()
             {
                 self.added.clear();
@@ -741,7 +740,7 @@ impl App {
                     egui::Button::new(egui::RichText::new("✏ Rename now").size(ACTION_TEXT_SIZE)),
                 )
                 .accessible_name("Rename now")
-                .on_hover_text("nothing is written before this")
+                .on_hover_text("Rename every matched row")
                 .clicked()
             {
                 self.overlay = Some(Overlay::ConfirmApply {

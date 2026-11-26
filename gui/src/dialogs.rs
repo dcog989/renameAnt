@@ -80,7 +80,7 @@ pub fn confirm_undo_row(ui: &mut Ui, run: RunId, from: &Path, to: &Path) -> Choi
     ui.heading(format!("Undo 1 rename in run {run}"));
     ui.monospace(format!("{} → {}", format::file_text(to), format::file_text(from)))
         .on_hover_text(format!("{} → {}", to.display(), from.display()));
-    ui.label("This reverses that one rename. Every other row of the run stays as it is.");
+    ui.label("Undo this rename");
     buttons(
         ui,
         "Undo",

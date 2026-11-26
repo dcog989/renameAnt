@@ -148,8 +148,8 @@ fn card(
             if !edit.builtin
                 && ui
                     .add(egui::Button::new(RichText::new("×").size(20.0)).frame(false))
-                    .on_hover_text("remove this rule")
-                    .accessible_name(name(index, "remove"))
+                    .on_hover_text("Remove this rule")
+                    .accessible_name(name(index, "Remove"))
                     .clicked()
             {
                 *remove = Some(index);
@@ -159,8 +159,8 @@ fn card(
                     index + 1 < count,
                     egui::Button::new(RichText::new("▼").monospace()).frame(false),
                 )
-                .on_hover_text("move down")
-                .accessible_name(name(index, "move down"))
+                .on_hover_text("Move down")
+                .accessible_name(name(index, "Move down"))
                 .clicked()
             {
                 *move_to = Some((index, index + 1));
@@ -170,8 +170,8 @@ fn card(
                     index > 0,
                     egui::Button::new(RichText::new("▲").monospace()).frame(false),
                 )
-                .on_hover_text("move up")
-                .accessible_name(name(index, "move up"))
+                .on_hover_text("Move up")
+                .accessible_name(name(index, "Move up"))
                 .clicked()
             {
                 *move_to = Some((index, index - 1));

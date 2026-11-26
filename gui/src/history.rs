@@ -96,7 +96,7 @@ pub fn show(
     let mut action = None;
     ui.horizontal(|ui| {
         let label = if history.oldest_first { "Oldest first" } else { "Newest first" };
-        if ui.button(label).on_hover_text("switch the journal's order").clicked() {
+        if ui.button(label).on_hover_text("Switch the journal's sort order").clicked() {
             history.oldest_first = !history.oldest_first;
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -132,9 +132,9 @@ pub fn show(
                 let response = if busy {
                     response.on_disabled_hover_text("a run is in progress")
                 } else if all_reversed {
-                    response.on_disabled_hover_text("every row of this run was already reversed")
+                    response.on_disabled_hover_text("Every row of this run was already reversed")
                 } else {
-                    response.on_hover_text("reverse every rename of this run")
+                    response.on_hover_text("Reverse every rename of this run")
                 };
                 if response.clicked() {
                     action = Some(Action::Undo(Undo::Run(session.clone())));
@@ -151,8 +151,8 @@ pub fn show(
                         )
                         .frame(false),
                     )
-                    .on_hover_text("show what this run renamed")
-                    .accessible_name(format!("renames of run {}", session.run));
+                    .on_hover_text("Show what this run renamed")
+                    .accessible_name(format!("Renames of run {}", session.run));
                 if toggle.clicked() {
                     if expanded {
                         history.open.remove(&session.run);
@@ -169,8 +169,8 @@ pub fn show(
                         ui.disable();
                     }
                     let chip = style::remove_chip(ui)
-                        .on_hover_text("delete this run from the journal; its undo is lost")
-                        .on_disabled_hover_text("a run is in progress");
+                        .on_hover_text("Delete this run from the journal")
+                        .on_disabled_hover_text("A run is in progress");
                     chip.widget_info(|| {
                         egui::WidgetInfo::labeled(
                             egui::Role::Button,
@@ -310,7 +310,7 @@ fn detail(
                 let enabled = !busy && !reversed && !staged;
                 let mut response = ui
                     .add_enabled(enabled, egui::Button::new("Undo"))
-                    .on_hover_text("reverse this one rename")
+                    .on_hover_text("Undo this rename")
                     .accessible_name(format!("undo {}", format::file_text(to)));
                 response = if busy {
                     response.on_disabled_hover_text("a run is in progress")
@@ -327,7 +327,7 @@ fn detail(
                 ui.monospace(format!("{} → {}", format::file_text(from), format::file_text(to)))
                     .on_hover_text(format!("{} → {}", from.display(), to.display()));
                 if reversed {
-                    ui.colored_label(warning(ui), "reversed");
+                    ui.colored_label(warning(ui), "Reversed");
                 }
             });
         }

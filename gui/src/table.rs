@@ -169,7 +169,7 @@ pub fn show(ui: &mut egui::Ui, model: &mut PlanModel) -> Change {
                         center(ui, style::REMOVE_CHIP, |ui| {
                             // The row's one action, focusable and announced.
                             let chip = style::remove_chip(ui)
-                                .on_hover_text("remove this row from the list");
+                                .on_hover_text("Remove this row from the list");
                             chip.widget_info(|| {
                                 egui::WidgetInfo::labeled(
                                     egui::Role::Button,
@@ -349,7 +349,7 @@ fn sort_header(
     ui.style_mut().spacing.interact_size.y = 0.0;
     let active = model.sort.key == key;
     let button = egui::Button::new(egui::RichText::new(title).strong()).frame(false);
-    let response = ui.add(button).on_hover_text("sort by this column");
+    let response = ui.add(button).on_hover_text("Sort by this column");
     if active {
         match align {
             // Added after the title, so it lands on the title's right, or on
