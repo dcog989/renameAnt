@@ -480,11 +480,13 @@ impl App {
             }
             Done::Statted(meta, requested) => {
                 self.stat_pending = false;
-                self.model.set_meta(meta);
                 // The pass may have been built for the plan before a filter
-                // change; ask for another one instead of marking the new rows
-                // as read.
-                if requested != self.model.plan.rows.len() {
+                // change. The paths, not their count, say whether it still
+                // answers for the rows on screen; a stale pass is dropped so
+                // the rows are read again instead of marked as read.
+                if requested == self.model.meta_paths() {
+                    self.model.set_meta(meta);
+                } else {
                     self.model.meta_loaded = false;
                 }
             }

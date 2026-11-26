@@ -369,7 +369,7 @@ fn a_stat_pass_for_the_old_plan_is_retried() {
     assert_eq!(app.model.plan.rows.len(), 2);
 
     let meta = FileMeta { size: Some(1), mtime: None };
-    app.handle(Done::Statted(vec![(PathBuf::from("/x/a"), meta)], 1));
+    app.handle(Done::Statted(vec![(PathBuf::from("/x/a"), meta)], vec![PathBuf::from("/x/a")]));
     assert!(!app.model.meta_loaded, "one of the two rows was read");
 
     app.maybe_stat();
@@ -377,9 +377,61 @@ fn a_stat_pass_for_the_old_plan_is_retried() {
 
     app.handle(Done::Statted(
         vec![(PathBuf::from("/x/a"), meta), (PathBuf::from("/x/b"), meta)],
-        2,
+        vec![PathBuf::from("/x/a"), PathBuf::from("/x/b")],
     ));
     assert!(app.model.meta_loaded);
+}
+
+/// The same path count is not the same plan. A pass for other rows must be
+/// dropped even when the new plan has as many rows as the old one.
+#[test]
+fn a_stat_pass_for_other_paths_is_dropped_even_at_the_same_count() {
+    let _guard = ENV.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    let home = tempfile::tempdir().expect("a home for the run");
+    let state = tempfile::tempdir().expect("somewhere for the journal");
+    unsafe {
+        env::set_var("HOME", home.path());
+        env::set_var("XDG_STATE_HOME", state.path());
+        env::set_var("XDG_CONFIG_HOME", state.path());
+    }
+
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT))
+        .allow_missing_glyphs()
+        .build_eframe(|cc| App::new(cc));
+    harness.step();
+
+    let entry = |name: &str| Entry {
+        path: PathBuf::from("/x").join(name),
+        name: name.into(),
+        kind: Kind::File,
+    };
+    let index_for = |names: &[&str]| {
+        let mut index = DirIndex::default();
+        index.insert(
+            PathBuf::from("/x"),
+            names.iter().map(|name| std::ffi::OsString::from(*name)).collect(),
+        );
+        index
+    };
+    let app = harness.state_mut();
+    app.model.set_scan(vec![entry("a"), entry("b")], index_for(&["a", "b"]));
+    app.replan();
+    assert_eq!(app.model.plan.rows.len(), 2);
+
+    // The filter changed under the pass, to two other rows.
+    app.model.set_scan(vec![entry("c"), entry("d")], index_for(&["c", "d"]));
+    app.replan();
+
+    let meta = FileMeta { size: Some(1), mtime: None };
+    app.handle(Done::Statted(
+        vec![(PathBuf::from("/x/a"), meta), (PathBuf::from("/x/b"), meta)],
+        vec![PathBuf::from("/x/a"), PathBuf::from("/x/b")],
+    ));
+
+    assert!(!app.model.meta_loaded, "the old rows are not the new plan");
+    assert!(app.model.meta.is_empty(), "the stale pass is dropped, not shown");
 }
 
 /// A modal shows numbers captured from the plan. A pending edit must not swap

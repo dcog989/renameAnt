@@ -60,9 +60,9 @@ pub enum Done {
         prune_error: Option<String>,
     },
     Scanned(io::Result<Scan>),
-    /// A stat pass. Paths it could not read are left out. The count is how many
-    /// paths were requested, so the app can tell the plan changed under it.
-    Statted(Vec<(PathBuf, FileMeta)>, usize),
+    /// A stat pass. Paths it could not read are left out, and the paths it was
+    /// asked for come back too, so the app can tell the plan changed under it.
+    Statted(Vec<(PathBuf, FileMeta)>, Vec<PathBuf>),
     /// A file browser that closed.
     Picked(Picked),
     /// An apply or an undo. `undo_of` names the run that was reversed.
@@ -135,12 +135,11 @@ fn serve(jobs: Receiver<Job>, done: Sender<Done>) {
             }
             Job::Scan(paths, recursive) => Done::Scanned(scan::scan_paths(&paths, recursive)),
             Job::Stat(paths) => {
-                let requested = paths.len();
                 let meta = paths
                     .iter()
                     .filter_map(|path| file_meta(path).map(|meta| (path.clone(), meta)))
                     .collect();
-                Done::Statted(meta, requested)
+                Done::Statted(meta, paths)
             }
             Job::Apply(plan, options) => {
                 let result = apply::apply(&plan, &options);
