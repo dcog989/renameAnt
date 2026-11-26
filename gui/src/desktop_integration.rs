@@ -6,6 +6,8 @@
 //! menu. Release filenames carry the version, so `Exec` is repointed whenever
 //! the running file differs.
 
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 const DESKTOP_FILE: &str = "renameant.desktop";
@@ -18,7 +20,10 @@ const DESKTOP_TEMPLATE: &str = include_str!("../../dist/renameant.desktop");
 /// recognised without parsing the quoted `Exec` value.
 const MARKER: &str = "X-RenameAnt-Exec=";
 /// A system install already provides the entry; a user copy would shadow it.
-const SYSTEM_DESKTOP_FILE: &str = "/usr/share/applications/renameant.desktop";
+const SYSTEM_DESKTOP_FILES: [&str; 2] = [
+    "/usr/share/applications/renameant.desktop",
+    "/usr/local/share/applications/renameant.desktop",
+];
 
 /// What the entry should launch: the AppImage, or a build run directly.
 struct Target {
@@ -35,14 +40,18 @@ pub fn install() {
 }
 
 fn sync() -> std::io::Result<()> {
-    if Path::new(SYSTEM_DESKTOP_FILE).exists() {
+    if SYSTEM_DESKTOP_FILES.iter().any(|path| Path::new(*path).exists()) {
         return Ok(());
     }
     let Some(target) = running_target() else {
         return Ok(());
     };
+    let Some(exec) = target.path.to_str() else {
+        eprintln!("renameAnt: desktop integration skipped: the executable path is not UTF-8");
+        return Ok(());
+    };
 
-    let data = data_home()?;
+    let data = renameant_core::xdg::base("XDG_DATA_HOME", ".local/share")?;
     let applications = data.join("applications");
     let icons = data.join("icons/hicolor/scalable/apps");
     std::fs::create_dir_all(&applications)?;
@@ -51,38 +60,31 @@ fn sync() -> std::io::Result<()> {
 
     let path = applications.join(DESKTOP_FILE);
     let existing = std::fs::read_to_string(&path).ok();
-    // A dev run must not hide a working AppImage entry, and every run keeps an
-    // entry it did not write. Only an AppImage run repoints unconditionally.
-    let keep = !target.appimage && existing.as_deref().is_some_and(is_current);
-    if !keep {
-        let content = entry(&target);
+    // A dev run must not hide a working AppImage entry. Only an AppImage run
+    // repoints unconditionally.
+    if !keep_existing(target.appimage, existing.as_deref()) {
+        let content = entry(exec, target.appimage);
         if existing.as_deref() != Some(content.as_str()) {
-            std::fs::write(&path, content.as_bytes())?;
+            write_atomic(&path, content.as_bytes())?;
             refresh_menu(&applications);
         }
     }
     Ok(())
 }
 
-/// `$XDG_DATA_HOME`, conventionally `~/.local/share`. No crate is pulled in for
-/// the one directory this app needs.
-fn data_home() -> std::io::Result<PathBuf> {
-    if let Some(dir) = std::env::var_os("XDG_DATA_HOME").filter(|dir| !dir.is_empty()) {
-        return Ok(PathBuf::from(dir));
-    }
-    let home = std::env::var_os("HOME").ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::NotFound, "neither XDG_DATA_HOME nor HOME is set")
-    })?;
-    Ok(PathBuf::from(home).join(".local/share"))
+/// Whether an entry can stay: never for an AppImage run, and for a dev run only
+/// when the entry's executable still exists.
+fn keep_existing(appimage: bool, existing: Option<&str>) -> bool {
+    !appimage && existing.is_some_and(is_current)
 }
 
 /// The AppImage launcher sets `APPIMAGE` to the file the user runs. Inside the
 /// mount `current_exe()` points at a path that disappears on exit.
 fn running_target() -> Option<Target> {
-    if let Some(path) =
-        std::env::var_os("APPIMAGE").map(PathBuf::from).filter(|path| path.is_file())
-    {
-        return Some(Target { path, appimage: true });
+    if let Some(path) = std::env::var_os("APPIMAGE").map(PathBuf::from) {
+        // Inside the mount `current_exe()` disappears with the process, so only
+        // the file the user launched is a usable target.
+        return path.is_file().then_some(Target { path, appimage: true });
     }
     let path = std::env::current_exe().ok()?;
     Some(Target { path, appimage: false })
@@ -94,8 +96,8 @@ fn is_current(content: &str) -> bool {
     marker_value(content).is_none_or(|path| Path::new(path).is_file())
 }
 
-fn entry(target: &Target) -> String {
-    let exec = exec_quote(&target.path.to_string_lossy());
+fn entry(path: &str, appimage: bool) -> String {
+    let exec = exec_quote(path);
     let mut entry = String::new();
     for line in DESKTOP_TEMPLATE.lines() {
         if line.starts_with("Exec=") {
@@ -107,10 +109,10 @@ fn entry(target: &Target) -> String {
     }
     // A menu entry for `target/debug/renameant-gui` is noise, but the icon still
     // has to be resolvable.
-    if !target.appimage {
+    if !appimage {
         entry.push_str("NoDisplay=true\n");
     }
-    entry.push_str(&format!("{MARKER}{}\n", target.path.display()));
+    entry.push_str(&format!("{MARKER}{path}\n"));
     entry
 }
 
@@ -148,10 +150,32 @@ fn write_if_changed(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     std::fs::write(path, bytes)
 }
 
+/// Writes beside the target and renames over it, so a second launch never sees
+/// half an entry. A stale temp is removed so `create_new` cannot follow a
+/// planted symlink.
+fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let temp = path.with_extension("desktop.tmp");
+    match std::fs::remove_file(&temp) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    let mut file = OpenOptions::new().write(true).create_new(true).open(&temp)?;
+    file.write_all(bytes)?;
+    drop(file);
+    std::fs::rename(&temp, path)
+}
+
 /// Rebuilds the desktop-file cache. Absent on minimal systems; KDE also
-/// refreshes through KSycoca, so a failure is not fatal.
+/// refreshes through KSycoca, so a failure is not fatal. It runs off the UI
+/// thread because the first frame should not wait on a directory scan.
 fn refresh_menu(applications: &Path) {
-    let _ = std::process::Command::new("update-desktop-database").arg(applications).status();
+    let applications = applications.to_path_buf();
+    let _ = std::thread::spawn(move || {
+        let _ = std::process::Command::new("update-desktop-database")
+            .arg(applications)
+            .status();
+    });
 }
 
 #[cfg(test)]
@@ -159,7 +183,7 @@ mod tests {
     use super::*;
 
     fn entry_for(path: &str) -> String {
-        entry(&Target { path: PathBuf::from(path), appimage: true })
+        entry(path, true)
     }
 
     #[test]
@@ -178,10 +202,7 @@ mod tests {
 
     #[test]
     fn dev_entry_is_hidden_and_points_at_the_binary() {
-        let entry = entry(&Target {
-            path: PathBuf::from("/repo/target/debug/renameant-gui"),
-            appimage: false,
-        });
+        let entry = entry("/repo/target/debug/renameant-gui", false);
         assert!(entry.contains("Exec=\"/repo/target/debug/renameant-gui\"\n"), "{entry}");
         assert!(entry.contains("NoDisplay=true\n"), "{entry}");
     }
@@ -201,6 +222,30 @@ mod tests {
         std::fs::write(&live, b"x").expect("the appimage");
         assert!(is_current(&entry_for(&live.to_string_lossy())));
         assert!(!is_current(&entry_for(&dir.path().join("moved-away.AppImage").to_string_lossy())));
+    }
+
+    #[test]
+    fn an_appimage_repoints_but_a_dev_run_keeps_a_live_entry() {
+        let dir = tempfile::tempdir().expect("a home for the appimage");
+        let live = dir.path().join("renameAnt-0.1.0-x86_64.AppImage");
+        std::fs::write(&live, b"x").expect("the appimage");
+        let current = entry_for(&live.to_string_lossy());
+        assert!(keep_existing(false, Some(current.as_str())));
+        assert!(!keep_existing(true, Some(current.as_str())));
+        assert!(!keep_existing(false, None));
+
+        let stale = entry_for(&dir.path().join("moved-away.AppImage").to_string_lossy());
+        assert!(!keep_existing(false, Some(stale.as_str())));
+    }
+
+    #[test]
+    fn an_entry_is_replaced_without_leaving_the_temp() {
+        let dir = tempfile::tempdir().expect("a home for the entry");
+        let path = dir.path().join(DESKTOP_FILE);
+        write_atomic(&path, b"one").expect("the first write");
+        write_atomic(&path, b"two").expect("the second write");
+        assert_eq!(std::fs::read(&path).expect("the entry"), b"two");
+        assert!(!dir.path().join("renameant.desktop.tmp").exists());
     }
 
     #[test]

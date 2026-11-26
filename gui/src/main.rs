@@ -21,7 +21,6 @@ use egui::ViewportBuilder;
 const WINDOW_SIZE: [f32; 2] = [1200.0, 720.0];
 
 fn main() -> eframe::Result {
-    desktop_integration::install();
     // One window: two instances would overwrite each other's rule list, and the
     // journal is easier to reason about with one writer.
     let journal = match renameant_core::journal::default_path() {
@@ -38,6 +37,8 @@ fn main() -> eframe::Result {
                 return quit(&format!("renameAnt could not lock its state directory:\n{error}"));
             }
         };
+    // Only the instance that owns the state may touch the menu entry.
+    desktop_integration::install();
     let options = eframe::NativeOptions {
         viewport: ViewportBuilder::default()
             .with_app_id("renameant")
