@@ -583,17 +583,12 @@ impl App {
             ui.spacing_mut().interact_size.y = TOP_ROW_HEIGHT;
             ui.horizontal(|ui| {
                 ui.add_enabled_ui(!self.browsing, |ui| {
-                    ui.menu_button("Browse…", |ui| {
-                        style::menu(ui);
-                        if ui.button("Folders…").clicked() {
-                            ui.close();
-                            self.pick_folder();
-                        }
-                        if ui.button("Files…").clicked() {
-                            ui.close();
-                            self.pick_files();
-                        }
-                    });
+                    if style::pointer(ui.button("Add files…")).clicked() {
+                        self.pick_files();
+                    }
+                    if style::pointer(ui.button("Add folder…")).clicked() {
+                        self.pick_folder();
+                    }
                 });
                 let typed = style::field(ui, &mut self.dir_field, DIR_FIELD_WIDTH)
                     .accessible_name("Directory");

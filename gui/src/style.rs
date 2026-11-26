@@ -25,20 +25,20 @@ const MENU_MARGIN: i8 = 8;
 pub const CELL_PADDING: i8 = 6;
 /// Space inside a panel title bar, around its title.
 const HEADER_PADDING: Margin = Margin::symmetric(12, 8);
-/// The window's accent: teal (#307f86). Selection, links and the panel title
+/// The window's accent: orange (#d87129). Selection, links and the panel title
 /// bars are all tinted from it.
-pub const ACCENT: Color32 = Color32::from_rgb(48, 127, 134);
+pub const ACCENT: Color32 = Color32::from_rgb(216, 113, 41);
 /// The outline on a focused or selected widget: the accent lifted for contrast.
-pub const ACCENT_LIGHT: Color32 = Color32::from_rgb(150, 210, 215);
+pub const ACCENT_LIGHT: Color32 = Color32::from_rgb(240, 195, 150);
 /// The accent lifted further and pushed to full chroma, for a rule that is on.
-pub const ACCENT_BRIGHT: Color32 = Color32::from_rgb(80, 218, 228);
+pub const ACCENT_BRIGHT: Color32 = Color32::from_rgb(255, 145, 65);
 /// Width of a focus outline.
 const FOCUS_WIDTH: f32 = 1.0;
 /// The panel title bars: the accent at low strength, so it reads as a tint
 /// rather than a highlight.
-const HEADER_FILL: Color32 = Color32::from_rgba_unmultiplied_const(48, 127, 134, 40);
+const HEADER_FILL: Color32 = Color32::from_rgba_unmultiplied_const(216, 113, 41, 40);
 /// The line under a title bar: the accent, a little stronger.
-const HEADER_LINE_COLOR: Color32 = Color32::from_rgba_unmultiplied_const(48, 127, 134, 130);
+const HEADER_LINE_COLOR: Color32 = Color32::from_rgba_unmultiplied_const(216, 113, 41, 130);
 /// Width of the line under a title bar.
 const HEADER_LINE_WIDTH: f32 = 1.0;
 
@@ -53,10 +53,8 @@ const DANGER_LIGHT: Color32 = Color32::from_rgb(164, 34, 26);
 /// "no match" is still a status the user reads, so it gets a theme pair too.
 const UNCHANGED_DARK: Color32 = Color32::from_rgb(192, 192, 192);
 const UNCHANGED_LIGHT: Color32 = Color32::from_rgb(95, 99, 104);
-/// Selected text and a focused field's outline, per theme. Light on the dark
-/// accent, dark on the light one, so both keep APCA contrast.
-const SELECTED_TEXT_DARK: Color32 = Color32::from_rgb(216, 243, 245);
-const SELECTED_TEXT_LIGHT: Color32 = Color32::from_rgb(18, 58, 63);
+/// Selected text: dark on the accent, which is light enough in either theme.
+const SELECTED_TEXT: Color32 = Color32::from_rgb(43, 20, 21);
 
 fn themed(ui: &Ui, light: Color32, dark: Color32) -> Color32 {
     if ui.visuals().dark_mode { dark } else { light }
@@ -93,10 +91,7 @@ pub fn apply(ctx: &Context) {
         style.spacing.menu_margin = Margin::same(MENU_MARGIN);
         style.visuals.selection.bg_fill =
             if style.visuals.dark_mode { ACCENT } else { ACCENT_LIGHT };
-        style.visuals.selection.stroke = Stroke::new(
-            FOCUS_WIDTH,
-            if style.visuals.dark_mode { SELECTED_TEXT_DARK } else { SELECTED_TEXT_LIGHT },
-        );
+        style.visuals.selection.stroke = Stroke::new(FOCUS_WIDTH, SELECTED_TEXT);
         // A pressed widget fills with the accent; a hovered one takes an accent
         // outline and, for text and drag handles, an accent stroke.
         style.visuals.widgets.active.weak_bg_fill = ACCENT;
