@@ -761,9 +761,9 @@ impl App {
             // Fill the panel width, or the list shrinks to its content and the
             // resize handle is inert (the same defect the rules panel had).
             ui.set_min_width(ui.available_width());
-            if self.sessions.is_empty() {
-                logo::paint(ui, &self.logo);
-            }
+            // The ant stays behind the runs, which paint no background of their
+            // own, so it reads through the list as well as the empty panel.
+            logo::paint(ui, &self.logo);
             if let Some(action) =
                 history::show(ui, &self.sessions, self.busy, &self.journal, &mut self.history)
             {
