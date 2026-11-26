@@ -85,6 +85,8 @@ fn card(
     ui.set_min_width(ui.available_width());
     let color = crate::style::card_text(ui, edit.enabled);
     ui.horizontal(|ui| {
+        crate::style::pointer(ui.add(egui::Checkbox::without_text(&mut edit.enabled)))
+            .accessible_name(name(index, "enabled"));
         let toggle_text = if edit.enabled { "turn this rule off" } else { "turn this rule on" };
         // The icon and title are one button, so they share one hover state and
         // one target. The colour is scoped: the row's other buttons keep the
@@ -107,8 +109,6 @@ fn card(
         if toggle.clicked() {
             edit.enabled = !edit.enabled;
         }
-        crate::style::pointer(ui.add(egui::Checkbox::without_text(&mut edit.enabled)))
-            .accessible_name(name(index, "enabled"));
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if !edit.builtin
