@@ -54,7 +54,6 @@ pub fn show(ui: &mut egui::Ui, model: &mut PlanModel) -> Change {
     ui.style_mut().interaction.selectable_labels = false;
     // Every column keeps its width, so a narrow centre panel would clip the tail
     // of them; the horizontal scroll keeps them all reachable instead.
-    let row_gap = ui.spacing().item_spacing.y;
     let mut header_bottom = None;
     let area = egui::ScrollArea::horizontal().auto_shrink([true, false]).show(ui, |ui| {
         // egui_extras draws a column's separator only when the column can be
@@ -197,16 +196,15 @@ pub fn show(ui: &mut egui::Ui, model: &mut PlanModel) -> Change {
             ui.painter().vline(x, y, stroke);
         }
     });
-    // The frame and the line under the titles are painted outside the scroll
+    // The frame and the rule under the titles are painted outside the scroll
     // area so they stay at the table's edges when the columns scroll. The frame
-    // encloses the titles too. The rule sits in the middle of the header gap,
-    // where the first row's tint starts: the titles then take a whole row slot,
-    // like every other row.
+    // encloses the titles too, and the rule closes the header row, so the
+    // titles are centred in the band it bounds.
     if let Some(header_bottom) = header_bottom {
         let stroke = ui.visuals().widgets.noninteractive.bg_stroke;
         let rect = area.inner_rect;
         ui.painter().rect_stroke(rect, egui::CornerRadius::ZERO, stroke, egui::StrokeKind::Inside);
-        ui.painter().hline(rect.x_range(), header_bottom + row_gap / 2.0, stroke);
+        ui.painter().hline(rect.x_range(), header_bottom, stroke);
     }
     Change { removed }
 }
