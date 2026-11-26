@@ -1,6 +1,6 @@
 # renameAnt
 
-Linux file / directory bulk renamer GUI. Provides fast and safe renaming with multiple rules, preview and undo.
+Linux bulk rename utility: a minimal GUI for fast and safe renaming of files and directories, with selectable rules, preview and undo journal.
 
 <!-- screenshots -->
 
@@ -26,7 +26,7 @@ Linux file / directory bulk renamer GUI. Provides fast and safe renaming with mu
 
 ## Install
 
-[Download the latest release](https://github.com/Bubba/renameAnt/releases/latest):
+[Download the latest release](https://github.com/dcog989/renameAnt/releases/latest):
 
 | Platform | Format   | Install                                                   |
 | -------- | -------- | --------------------------------------------------------- |

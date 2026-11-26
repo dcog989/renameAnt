@@ -35,7 +35,7 @@ Run from the workspace root:
 
 ### File System Access
 
-- Allowed: `/home/bubba/Projects/renameAnt/` and all contained directories + files; `/tmp/*`, prefer `/tmp/opencode/`
+- Allowed: `/home/dcog989/Projects/renameAnt/` and all contained directories + files; `/tmp/*`, prefer `/tmp/opencode/`
 - Read-Only: `.env*`, `.git/`, `.docs/ToDo.md`
 - Disallowed: everything not listed in 'Allowed' unless user grants permission.
 - Require confirmation: adding/removing dependencies (including any new crate in a `Cargo.toml`), any operation outside project root
@@ -45,6 +45,12 @@ Run from the workspace root:
 
 - Do not run test, lint, format, or type-check commands; the user builds, tests, and lints manually.
 - Run them only when the user explicitly asks.
+
+### UI Styling
+
+- Use base egui widgets and the constants in GUI/src/style.rs first.
+- Never add local padding/spacing constants where an existing style value applies.
+- Banned unless the task explicitly asks: small_button, scoped button_padding, item_spacing.y = 0, invented spacing rhythms.
 
 ---
 

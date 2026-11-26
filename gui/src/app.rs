@@ -15,6 +15,7 @@ use renameant_core::journal::{self, RunId, Session};
 use renameant_core::rule::RuleSet;
 use renameant_core::scan::Scan;
 
+use crate::about::About;
 use crate::config;
 use crate::dialogs::{self, Choice};
 use crate::edit::{RuleEdit, default_rules, with_defaults};
@@ -40,6 +41,8 @@ const TOP_ROW_HEIGHT: f32 = 32.0;
 /// The narrowest a modal gets, so a short report does not squeeze its text into
 /// a column.
 const OVERLAY_WIDTH: f32 = 520.0;
+/// The About button in the footer: one line of the Rename now label, icon included.
+const ABOUT_ICON_SIZE: f32 = 24.0;
 /// Only used when neither XDG_CONFIG_HOME nor HOME is set.
 const FALLBACK_CONFIG: &str = "renameant-rules.json";
 
@@ -89,6 +92,8 @@ pub struct App {
     /// on the next edit, not on every frame.
     save_attempted: Vec<RuleEdit>,
     config_path: PathBuf,
+    /// Saved with the rules; the logger reads it once logging lands.
+    log_level: config::LogLevel,
     /// The rules and filter the current plan was built from.
     planned: (RuleSet, Filter),
     dirty_since: Option<Instant>,
@@ -118,14 +123,15 @@ pub struct App {
     /// succeeds.
     journal_error: Option<String>,
     overlay: Option<Overlay>,
+    about: About,
 }
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         style::apply(&cc.egui_ctx);
         let config_path = config::default_path().unwrap_or_else(|_| PathBuf::from(FALLBACK_CONFIG));
-        let (edits, status) = match config::load(&config_path) {
-            Ok((edits, unsupported)) => {
+        let (edits, status, log_level) = match config::load(&config_path) {
+            Ok((edits, unsupported, log_level)) => {
                 let mut status = unsupported_rules(&unsupported);
                 // A later save writes only the rules this version knows. Keep
                 // the original file so a newer version's rule is not lost.
@@ -135,9 +141,13 @@ impl App {
                         status.push_str(&format!("; the rules could not be backed up: {error}"));
                     }
                 }
-                (with_defaults(edits), status)
+                (with_defaults(edits), status, log_level)
             }
-            Err(error) => (default_rules(), format!("the saved rules could not be read: {error}")),
+            Err(error) => (
+                default_rules(),
+                format!("the saved rules could not be read: {error}"),
+                config::LogLevel::default(),
+            ),
         };
         let journal = journal::default_path()
             .expect("main resolved the state directory before opening the window");
@@ -153,6 +163,7 @@ impl App {
             save_attempted: edits.clone(),
             edits,
             config_path,
+            log_level,
             planned: (RuleSet::default(), Filter::default()),
             dirty_since: None,
             worker: Worker::spawn(),
@@ -169,6 +180,7 @@ impl App {
             run_error: None,
             journal_error: None,
             overlay: None,
+            about: About::default(),
         };
         // Pruning and listing the journal read the whole file; keep them off
         // the first frame.
@@ -237,10 +249,16 @@ impl App {
         if self.edits == self.saved || self.edits == self.save_attempted {
             return;
         }
+        self.save_settings();
+    }
+
+    /// Writes the rules and the log level together, so the file stays one
+    /// source of truth.
+    fn save_settings(&mut self) {
         self.save_attempted.clone_from(&self.edits);
-        match config::save(&self.config_path, &self.edits) {
+        match config::save(&self.config_path, &self.edits, self.log_level) {
             Ok(()) => self.saved.clone_from(&self.edits),
-            Err(error) => self.status = format!("the rules could not be saved: {error}"),
+            Err(error) => self.status = format!("the settings could not be saved: {error}"),
         }
     }
 
@@ -744,6 +762,22 @@ impl App {
                 crate::format::plural(totals.files, "file", "files"),
                 crate::format::plural(totals.folders, "folder", "folders")
             ));
+            // The foot of the content column: the logo opens About.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // Equal padding both ways, or the image button frames oblong.
+                ui.scope(|ui| {
+                    ui.spacing_mut().button_padding = egui::Vec2::splat(style::BUTTON_PADDING.y);
+                    let icon = egui::Image::new(&self.logo)
+                        .fit_to_exact_size(egui::Vec2::splat(ABOUT_ICON_SIZE));
+                    if style::pointer(ui.add(egui::Button::image(icon)))
+                        .on_hover_text("About renameAnt")
+                        .accessible_name("About renameAnt")
+                        .clicked()
+                    {
+                        self.about.toggle();
+                    }
+                });
+            });
         });
         if !self.status.is_empty() {
             ui.label(self.status.as_str());
@@ -915,6 +949,9 @@ impl eframe::App for App {
             .show(ui, |ui| self.content_panel(ui));
         self.maybe_stat();
         self.show_overlay(&ctx);
+        if self.about.show(&ctx, &mut self.log_level) {
+            self.save_settings();
+        }
     }
 }
 

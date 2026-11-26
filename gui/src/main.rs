@@ -1,6 +1,7 @@
 //! renameAnt desktop app. The initial state is a dry run: nothing is written
 //! before you press Apply.
 
+mod about;
 mod app;
 mod config;
 mod desktop_integration;

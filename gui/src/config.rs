@@ -1,7 +1,8 @@
-//! The rule list on disk: `$XDG_CONFIG_HOME/renameant/rules.json`.
+//! The settings on disk: `$XDG_CONFIG_HOME/renameant/rules.json`.
 //!
-//! Only the rules are kept, each with its on/off state, in order. The picked
-//! paths, the filters and the removed rows are per-session.
+//! The rules are kept, each with its on/off state, in order, plus the log level
+//! the logger will read. The picked paths, the filters and the removed rows are
+//! per-session.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -14,6 +15,32 @@ use crate::edit::RuleEdit;
 const CONFIG_DIR: &str = "renameant";
 const CONFIG_FILE: &str = "rules.json";
 
+/// How much the app logs. Saved now; the logger reads it once logging lands.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LogLevel {
+    Error,
+    Warn,
+    #[default]
+    Info,
+    Debug,
+    Trace,
+}
+
+impl LogLevel {
+    pub const ALL: [Self; 5] = [Self::Error, Self::Warn, Self::Info, Self::Debug, Self::Trace];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::Warn => "warn",
+            Self::Info => "info",
+            Self::Debug => "debug",
+            Self::Trace => "trace",
+        }
+    }
+}
+
 /// What the file holds: the rules, and one on/off and one default flag per rule
 /// in the same order. This is `RuleSet` plus the flags, flattened.
 #[derive(Default, Serialize)]
@@ -24,6 +51,7 @@ struct StoredRules {
     /// A missing flag reads as custom, so a file from before the default cards
     /// existed gains them on the next start.
     builtin: Vec<bool>,
+    log_level: LogLevel,
 }
 
 /// What `load` reads. A rule stays opaque until it parses, so one rule this
@@ -36,6 +64,8 @@ struct LoadedRules {
     enabled: Vec<bool>,
     #[serde(default)]
     builtin: Vec<bool>,
+    #[serde(default)]
+    log_level: LogLevel,
 }
 
 /// `$XDG_CONFIG_HOME/renameant/rules.json`, default
@@ -44,13 +74,13 @@ pub fn default_path() -> io::Result<PathBuf> {
     Ok(renameant_core::xdg::base("XDG_CONFIG_HOME", ".config")?.join(CONFIG_DIR).join(CONFIG_FILE))
 }
 
-/// The saved rules, in order, and the tags of the rules this version could not
-/// read. A missing file is an empty pipeline.
-pub fn load(path: &Path) -> io::Result<(Vec<RuleEdit>, Vec<String>)> {
+/// The saved rules, in order, the tags of the rules this version could not read,
+/// and the saved log level. A missing file is an empty pipeline.
+pub fn load(path: &Path) -> io::Result<(Vec<RuleEdit>, Vec<String>, LogLevel)> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Ok((Vec::new(), Vec::new()));
+            return Ok((Vec::new(), Vec::new(), LogLevel::default()));
         }
         Err(error) => return Err(error),
     };
@@ -80,15 +110,17 @@ pub fn load(path: &Path) -> io::Result<(Vec<RuleEdit>, Vec<String>)> {
             ))
         })
         .collect();
-    Ok((edits, unsupported))
+    Ok((edits, unsupported, stored.log_level))
 }
 
-/// Writes the rules and their on/off state, creating the directory.
-pub fn save(path: &Path, edits: &[RuleEdit]) -> io::Result<()> {
+/// Writes the rules, their on/off state and the log level, creating the
+/// directory.
+pub fn save(path: &Path, edits: &[RuleEdit], log_level: LogLevel) -> io::Result<()> {
     let stored = StoredRules {
         rules: edits.iter().map(RuleEdit::to_rule).collect(),
         enabled: edits.iter().map(|edit| edit.enabled).collect(),
         builtin: edits.iter().map(|edit| edit.builtin).collect(),
+        log_level,
     };
     let text = serde_json::to_string_pretty(&stored).map_err(io::Error::other)?;
     if let Some(parent) = path.parent() {
@@ -113,11 +145,23 @@ mod tests {
         let saved = r#"{"rules":[{"rule":"translit","target":"stem"},{"rule":"case","style":"upper","target":"stem"}],"enabled":[true,true],"builtin":[true,false]}"#;
         std::fs::write(&path, saved).expect("write");
 
-        let (edits, unsupported) = load(&path).expect("load");
+        let (edits, unsupported, log_level) = load(&path).expect("load");
 
         assert_eq!(unsupported, vec!["translit".to_owned()]);
         assert_eq!(edits.len(), 1);
         assert_eq!(edits[0].kind, RuleKind::Case);
         assert!(edits[0].enabled);
+        assert_eq!(log_level, LogLevel::default(), "an old file keeps the default level");
+    }
+
+    #[test]
+    fn the_log_level_round_trips() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = temp.path().join("rules.json");
+
+        save(&path, &[], LogLevel::Debug).expect("save");
+        let (_, _, log_level) = load(&path).expect("load");
+
+        assert_eq!(log_level, LogLevel::Debug);
     }
 }
