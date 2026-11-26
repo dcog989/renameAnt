@@ -188,7 +188,12 @@ impl App {
     /// The enabled rules, in order. An off rule is skipped here and nowhere else.
     fn rules(&self) -> RuleSet {
         RuleSet {
-            rules: self.edits.iter().filter(|edit| edit.enabled).map(RuleEdit::to_rule).collect(),
+            rules: self
+                .edits
+                .iter()
+                .filter(|edit| edit.is_active())
+                .map(RuleEdit::to_rule)
+                .collect(),
         }
     }
 

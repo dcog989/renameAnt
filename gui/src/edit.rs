@@ -220,6 +220,13 @@ impl RuleEdit {
         *self == fresh
     }
 
+    /// Whether this card builds a rule at all. An enabled replace card with no
+    /// find text cannot match anything, so leaving it out keeps the preview
+    /// visible instead of blanking it with `EmptyLiteral`.
+    pub fn is_active(&self) -> bool {
+        self.enabled && (self.kind != RuleKind::Replace || self.regex || !self.value.is_empty())
+    }
+
     /// The `Rule` this editor stands for. Infallible: a pattern that will not
     /// compile is `plan`'s error to report.
     pub fn to_rule(&self) -> Rule {
@@ -559,6 +566,19 @@ mod tests {
         assert_eq!(trims.len(), 1);
         assert_eq!(trims[0].count, 3);
         assert!(trims[0].builtin);
+    }
+
+    #[test]
+    fn an_enabled_replace_card_with_no_find_text_is_inactive() {
+        let enabled = RuleEdit { kind: RuleKind::Replace, enabled: true, ..RuleEdit::default() };
+        assert!(!enabled.is_active(), "an empty find cannot match");
+
+        let typed = RuleEdit { value: "a".into(), ..enabled.clone() };
+        assert!(typed.is_active());
+
+        // An empty regex is a valid pattern that matches everywhere.
+        let regex = RuleEdit { regex: true, ..enabled };
+        assert!(regex.is_active());
     }
 
     #[test]
