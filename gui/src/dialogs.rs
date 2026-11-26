@@ -29,7 +29,8 @@ pub fn confirm_undo(ui: &mut Ui, session: &Session) -> Choice {
     let (run, renames) = (session.run, session.renames);
     ui.heading(format!("Undo run {run}"));
     ui.label(format!(
-        "{renames} journal records, reversed newest first. A row whose file has moved is reported, not forced."
+        "{}, reversed newest first. A row whose file has moved is reported, not forced.",
+        format::plural(renames, "journal record", "journal records")
     ));
     let note = history::note(session);
     if !note.is_empty() {
@@ -79,7 +80,8 @@ pub fn confirm_remove(ui: &mut Ui, session: &Session) -> Choice {
 pub fn confirm_clear(ui: &mut Ui, runs: usize, interrupted: usize) -> Choice {
     ui.heading("Clear the journal");
     ui.label(format!(
-        "All {runs} runs are removed. Files stay as they are, and nothing in the journal can be undone afterward."
+        "All {} removed. Files stay as they are, and nothing in the journal can be undone afterward.",
+        format::plural(runs, "run is", "runs are")
     ));
     if interrupted > 0 {
         ui.colored_label(

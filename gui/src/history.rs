@@ -161,7 +161,7 @@ pub fn show(
                     }
                 }
                 ui.monospace(format::local_text(session.at));
-                ui.label(format!("{} records", session.renames));
+                ui.label(format::plural(session.renames, "record", "records"));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // The row's one action, drawn exactly like the table's. A
                     // run in progress disables it, as it disables Undo.

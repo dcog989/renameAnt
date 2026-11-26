@@ -160,7 +160,10 @@ fn add_menu(ui: &mut Ui, edits: &mut Vec<RuleEdit>) {
         if ui.button("Reset").clicked() {
             *edits = default_rules();
         }
-        ui.label(format!("{} rules, applied in order", edits.len()));
+        ui.label(format!(
+            "{}, applied in order",
+            crate::format::plural(edits.len(), "rule", "rules")
+        ));
     });
 }
 

@@ -47,6 +47,11 @@ pub fn file_text(path: &Path) -> String {
     name_text(file_bytes(path))
 }
 
+/// `n` with the noun that fits it, e.g. `1 record` and `2 records`.
+pub fn plural(n: usize, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
 /// A path split for the preview: everything up to its name, and the name
 /// itself, so the name can be shown stronger than the folders above it.
 pub fn path_parts(path: &Path) -> (String, String) {

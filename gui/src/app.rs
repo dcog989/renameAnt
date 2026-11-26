@@ -427,11 +427,12 @@ impl App {
                     self.scan_truncated = truncated;
                     self.scan_unreadable = unreadable;
                     self.status = if truncated {
-                        format!("stopped at {count} entries")
+                        format!("stopped at {}", crate::format::plural(count, "entry", "entries"))
                     } else if !self.scan_unreadable.is_empty() {
                         format!(
-                            "{count} entries; {} folders could not be read",
-                            self.scan_unreadable.len()
+                            "{}; {} could not be read",
+                            crate::format::plural(count, "entry", "entries"),
+                            crate::format::plural(self.scan_unreadable.len(), "folder", "folders")
                         )
                     } else {
                         // The count is shown under the table; repeating it in the
@@ -740,7 +741,11 @@ impl App {
             {
                 self.start_apply();
             }
-            ui.label(format!("{} files / {} folders", totals.files, totals.folders));
+            ui.label(format!(
+                "{} / {}",
+                crate::format::plural(totals.files, "file", "files"),
+                crate::format::plural(totals.folders, "folder", "folders")
+            ));
         });
         if !self.status.is_empty() {
             ui.label(self.status.as_str());
@@ -792,9 +797,9 @@ impl App {
             // own: the table takes the rest without this caller measuring a line.
             let (shown, scanned) = (self.model.plan.rows.len(), self.model.entries.len());
             let text = if self.model.filter.is_inactive() {
-                format!("{shown} entries")
+                crate::format::plural(shown, "entry", "entries")
             } else {
-                format!("{shown} of {scanned} entries")
+                format!("{shown} of {}", crate::format::plural(scanned, "entry", "entries"))
             };
             egui::Panel::bottom("renameant-count")
                 .frame(egui::Frame::new())
