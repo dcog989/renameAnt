@@ -181,7 +181,7 @@ pub fn show(ui: &mut egui::Ui, model: &mut PlanModel) -> Change {
                             let chip = ui
                                 .interact(
                                     rect,
-                                    ui.id().with("remove-row"),
+                                    ui.scope_id().with("remove-row"),
                                     egui::Sense::click(),
                                 )
                                 .on_hover_text("remove this row from the list")

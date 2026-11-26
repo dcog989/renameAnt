@@ -17,8 +17,8 @@ use egui::{RichText, Ui};
 use renameant_core::apply::is_staged;
 use renameant_core::journal::{Journal, RunId, Session};
 
-use crate::app::warning;
 use crate::format;
+use crate::style::warning;
 
 /// What the user asked to undo: a whole run, or one row of it.
 pub enum Undo {
@@ -408,6 +408,6 @@ mod tests {
         let mut history = History::default();
         let reversed = reversed_rows(&sessions, &path, &mut history);
 
-        assert!(reversed.get(&1).is_none(), "nothing was reversed");
+        assert!(!reversed.contains_key(&1), "nothing was reversed");
     }
 }
