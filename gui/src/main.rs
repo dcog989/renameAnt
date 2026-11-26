@@ -18,7 +18,7 @@ mod worker;
 
 use egui::ViewportBuilder;
 
-/// The panes fit a narrow screen and the table scrolls sideways past this.
+/// The panes fit a narrow screen; the table's columns share what the centre has.
 const WINDOW_SIZE: [f32; 2] = [1200.0, 720.0];
 
 fn main() -> eframe::Result {

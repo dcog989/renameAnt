@@ -21,10 +21,12 @@ const STATUS_WIDTH: f32 = 110.0;
 /// The merged path column: room for a full path, with the name's tail last.
 const PATH_WIDTH: f32 = 300.0;
 const NAME_WIDTH: f32 = 150.0;
-const NAME_MIN_WIDTH: f32 = 80.0;
 const SIZE_WIDTH: f32 = 70.0;
-const SIZE_MIN_WIDTH: f32 = 50.0;
+/// A full timestamp ("2026/11/26, 14:31:00") and its sort marker.
+const MODIFIED_WIDTH: f32 = 170.0;
 const REMOVE_WIDTH: f32 = 70.0;
+/// Gaps between the seven columns.
+const COLUMN_GAPS: f32 = 6.0;
 /// The sort marker beside a header: a painted triangle, not a glyph.
 const ARROW_WIDTH: f32 = 10.0;
 const ARROW_HEIGHT: f32 = 6.0;
@@ -52,9 +54,8 @@ pub fn show(ui: &mut egui::Ui, model: &mut PlanModel) -> Change {
     // A label left selectable senses drag, which makes it the row's topmost
     // interactive widget and leaves the row's own hover highlight unpainted.
     ui.style_mut().interaction.selectable_labels = false;
-    // The Modified column takes the remaining width, so a wide centre panel is
-    // filled; the rest keep their widths and the horizontal scroll keeps them
-    // reachable when the panel is narrow.
+    // The table fills the content column; the trailing spacer keeps it full
+    // width without stretching any real column.
     let mut header_bottom = None;
     // The frame and the row bands span the columns, not the whole scroll viewport,
     // so neither leaves an unpainted strip after the last column.
@@ -67,6 +68,15 @@ pub fn show(ui: &mut egui::Ui, model: &mut PlanModel) -> Change {
         // egui_extras draws a column's separator only when the column can be
         // dragged, so the fixed columns' separators are painted here instead.
         let mut fixed_edges: Vec<f32> = Vec::new();
+        // The columns keep their natural widths where they fit; a narrower pane
+        // scales them down so the real columns plus the spacer always fill it.
+        let total = PATH_WIDTH + NAME_WIDTH + SIZE_WIDTH + MODIFIED_WIDTH;
+        let room = (ui.available_width()
+            - STATUS_WIDTH
+            - REMOVE_WIDTH
+            - ui.spacing().item_spacing.x * COLUMN_GAPS)
+            .max(0.0);
+        let scale = (room / total).min(1.0);
         let table = TableBuilder::new(ui)
             .striped(true)
             .resizable(true)
@@ -77,12 +87,13 @@ pub fn show(ui: &mut egui::Ui, model: &mut PlanModel) -> Change {
             // keyboard focus stops, because the Remove chip is the row's action.
             .sense(egui::Sense::CLICK)
             .cell_layout(Layout::left_to_right(Align::Center))
-            .column(Column::exact(STATUS_WIDTH).resizable(false).clip(true))
-            .column(Column::initial(PATH_WIDTH).at_least(NAME_MIN_WIDTH).clip(true))
-            .column(Column::initial(NAME_WIDTH).at_least(NAME_MIN_WIDTH).clip(true))
-            .column(Column::initial(SIZE_WIDTH).at_least(SIZE_MIN_WIDTH).clip(true))
-            .column(Column::remainder().resizable(false))
+            .column(Column::exact(STATUS_WIDTH).resizable(false))
+            .column(Column::initial(PATH_WIDTH * scale).clip(true))
+            .column(Column::initial(NAME_WIDTH * scale).clip(true))
+            .column(Column::initial(SIZE_WIDTH * scale).clip(true))
+            .column(Column::exact(MODIFIED_WIDTH * scale).resizable(false))
             .column(Column::exact(REMOVE_WIDTH).resizable(false))
+            .column(Column::remainder().resizable(false))
             .header(HEADER_HEIGHT, |mut header| {
                 header.col(|ui| {
                     header_bottom = Some(ui.max_rect().bottom());
@@ -103,6 +114,7 @@ pub fn show(ui: &mut egui::Ui, model: &mut PlanModel) -> Change {
                     sort_cell(ui, model, SortKey::Mtime, "Modified", HeaderAlign::Center);
                 });
                 header.col(|ui| {
+                    fixed_edges.push(fixed_column_edge(ui));
                     cell(ui, |ui| {
                         let width = text_width(ui, "Remove");
                         center(ui, width, |ui| {
@@ -110,6 +122,8 @@ pub fn show(ui: &mut egui::Ui, model: &mut PlanModel) -> Change {
                         });
                     });
                 });
+                // The spacer column: it takes the width the panel has left.
+                header.col(|_ui| {});
             });
         table.body(|mut body| {
             let spacing_x = body.ui_mut().spacing().item_spacing.x;
@@ -190,6 +204,8 @@ pub fn show(ui: &mut egui::Ui, model: &mut PlanModel) -> Change {
                         });
                     });
                 });
+                // The spacer column's cell.
+                row.col(|_ui| {});
                 row.response().context_menu(|ui| {
                     if ui.button("Remove").clicked() {
                         removed = Some(removed_here.clone());
@@ -311,9 +327,9 @@ fn center<R>(ui: &mut egui::Ui, width: f32, content: impl FnOnce(&mut egui::Ui) 
     .inner
 }
 
-/// The x of the divider after a fixed column. `ui` is that column's header cell;
-/// the offset is the spacing egui_extras leaves between columns, so the line
-/// lands where it puts a resizable column's separator.
+/// The x of the divider after a column. `ui` is that column's header cell; the
+/// offset is the spacing egui_extras leaves between columns, so the line lands
+/// where the table lays the next column out.
 fn fixed_column_edge(ui: &egui::Ui) -> f32 {
     ui.max_rect().right() + ui.spacing().item_spacing.x
 }
