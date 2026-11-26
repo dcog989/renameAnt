@@ -34,9 +34,11 @@ fn path_bytes(path: &Path) -> &[u8] {
 
 /// A missing value sorts last in both directions; `desc` flips only the values.
 fn compare_meta<T: Ord>(left: (bool, T), right: (bool, T), desc: bool) -> std::cmp::Ordering {
-    left.0.cmp(&right.0).then_with(|| {
-        if desc { right.1.cmp(&left.1) } else { left.1.cmp(&right.1) }
-    })
+    left.0.cmp(&right.0).then_with(
+        || {
+            if desc { right.1.cmp(&left.1) } else { left.1.cmp(&right.1) }
+        },
+    )
 }
 
 /// Which order the table shows the rows in. The plan itself is never reordered;
@@ -228,11 +230,9 @@ impl PlanModel {
             }),
             SortKey::Status => view.sort_by(|left, right| {
                 let (left, right) = (&rows[*left], &rows[*right]);
-                format::status_rank(left.status)
-                    .cmp(&format::status_rank(right.status))
-                    .then_with(|| {
-                        format::status_label(left.status).cmp(format::status_label(right.status))
-                    })
+                format::status_rank(left.status).cmp(&format::status_rank(right.status)).then_with(
+                    || format::status_label(left.status).cmp(format::status_label(right.status)),
+                )
             }),
             SortKey::After => view.sort_by(|left, right| {
                 path_bytes(&rows[*left].dst).cmp(path_bytes(&rows[*right].dst))

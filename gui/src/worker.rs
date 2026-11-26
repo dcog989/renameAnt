@@ -180,11 +180,8 @@ fn ran(undo_of: Option<RunId>, result: io::Result<ApplyReport>, options: &ApplyO
         undo_of,
         interrupted: false,
     });
-    let sessions = if result.is_err() {
-        Journal::sessions(&options.journal)
-    } else {
-        Ok(Vec::new())
-    };
+    let sessions =
+        if result.is_err() { Journal::sessions(&options.journal) } else { Ok(Vec::new()) };
     Done::Ran { undo_of, result, session, sessions }
 }
 

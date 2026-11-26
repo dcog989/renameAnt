@@ -313,10 +313,7 @@ pub fn undo(options: &ApplyOptions, target: RunId) -> io::Result<ApplyReport> {
 
 /// The renames of `target` that a later run with `undo_of` recorded the
 /// inverse of, as `(from, to)` of the target's own records.
-fn reversed_by_later_runs(
-    path: &Path,
-    target: RunId,
-) -> io::Result<HashSet<(PathBuf, PathBuf)>> {
+fn reversed_by_later_runs(path: &Path, target: RunId) -> io::Result<HashSet<(PathBuf, PathBuf)>> {
     let mut reversed = HashSet::new();
     for session in Journal::sessions(path)? {
         if session.undo_of != Some(target) {

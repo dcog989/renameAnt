@@ -307,14 +307,8 @@ fn a_failed_run_and_an_unreadable_journal_stay_on_screen() {
         .build_eframe(|cc| App::new(cc));
     pump_until(&mut harness, "the first frame", |app| !app.busy);
 
-    let session = Session {
-        run: 1,
-        at: 0,
-        renames: 1,
-        overwrite: false,
-        undo_of: None,
-        interrupted: false,
-    };
+    let session =
+        Session { run: 1, at: 0, renames: 1, overwrite: false, undo_of: None, interrupted: false };
     let app = harness.state_mut();
     app.sessions = vec![session.clone()];
     app.handle(Done::Ran {

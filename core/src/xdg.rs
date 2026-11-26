@@ -11,12 +11,7 @@ use std::path::{Path, PathBuf};
 /// `$<var>`, or `$HOME/<fallback>`. Both must be absolute; a relative value
 /// falls back rather than resolving against the current directory.
 pub fn base(var: &str, fallback: &str) -> io::Result<PathBuf> {
-    resolve(
-        std::env::var_os(var).as_deref(),
-        std::env::var_os("HOME").as_deref(),
-        var,
-        fallback,
-    )
+    resolve(std::env::var_os(var).as_deref(), std::env::var_os("HOME").as_deref(), var, fallback)
 }
 
 fn resolve(

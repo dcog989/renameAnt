@@ -354,10 +354,7 @@ impl App {
 
     fn start_apply(&mut self) {
         self.run_error = None;
-        let options = ApplyOptions {
-            journal: self.journal.clone(),
-            batched_sync: self.fast,
-        };
+        let options = ApplyOptions { journal: self.journal.clone(), batched_sync: self.fast };
         self.status = "applying…".to_owned();
         self.dispatch(Job::Apply(Box::new(self.model.plan.clone()), options));
     }

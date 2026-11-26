@@ -172,9 +172,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 fn refresh_menu(applications: &Path) {
     let applications = applications.to_path_buf();
     let _ = std::thread::spawn(move || {
-        let _ = std::process::Command::new("update-desktop-database")
-            .arg(applications)
-            .status();
+        let _ = std::process::Command::new("update-desktop-database").arg(applications).status();
     });
 }
 

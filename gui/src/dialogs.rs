@@ -33,12 +33,7 @@ pub enum Choice {
     Close,
 }
 
-pub fn confirm_apply(
-    ui: &mut Ui,
-    skipped_rows: &[PlanRow],
-    totals: Totals,
-    fast: bool,
-) -> Choice {
+pub fn confirm_apply(ui: &mut Ui, skipped_rows: &[PlanRow], totals: Totals, fast: bool) -> Choice {
     let (actionable, candidates, skipped) = (totals.actionable, totals.candidates, totals.skipped);
     ui.heading(format!("Apply {actionable} of {candidates}"));
     if fast {
@@ -201,9 +196,7 @@ pub fn listed_indices(report: &ApplyReport) -> Vec<usize> {
                 .rows
                 .iter()
                 .enumerate()
-                .filter(|(_, row)| {
-                    !matches!(row.outcome, Outcome::Skipped | Outcome::Failed(_))
-                })
+                .filter(|(_, row)| !matches!(row.outcome, Outcome::Skipped | Outcome::Failed(_)))
                 .map(|(at, _)| at)
                 .take(REPORT_ROWS_SHOWN - listed.len()),
         );
