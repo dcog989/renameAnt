@@ -62,14 +62,14 @@ impl RuleKind {
 
     pub fn label(self) -> &'static str {
         match self {
-            RuleKind::Replace => "replace",
-            RuleKind::Remove => "remove",
-            RuleKind::Trim => "trim",
-            RuleKind::Insert => "insert",
-            RuleKind::Number => "number",
-            RuleKind::Date => "date",
-            RuleKind::Case => "change case",
-            RuleKind::Normalize => "normalize",
+            RuleKind::Replace => "Replace",
+            RuleKind::Remove => "Remove",
+            RuleKind::Trim => "Trim",
+            RuleKind::Insert => "Insert",
+            RuleKind::Number => "Number",
+            RuleKind::Date => "Date",
+            RuleKind::Case => "Change case",
+            RuleKind::Normalize => "Normalize",
         }
     }
 }

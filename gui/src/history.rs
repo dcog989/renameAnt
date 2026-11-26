@@ -18,7 +18,7 @@ use renameant_core::apply::is_staged;
 use renameant_core::journal::{Journal, RunId, Session};
 
 use crate::format;
-use crate::style::warning;
+use crate::style::{self, warning};
 
 /// What the user asked to undo: a whole run, or one row of it.
 pub enum Undo {
@@ -163,12 +163,22 @@ pub fn show(
                 ui.monospace(format::local_text(session.at));
                 ui.label(format!("{} records", session.renames));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .add_enabled(!busy, egui::Button::new("✕").small())
+                    // The row's one action, drawn exactly like the table's. A
+                    // run in progress disables it, as it disables Undo.
+                    if busy {
+                        ui.disable();
+                    }
+                    let chip = style::remove_chip(ui)
                         .on_hover_text("delete this run from the journal; its undo is lost")
-                        .accessible_name(format!("remove run {} from the journal", session.run))
-                        .clicked()
-                    {
+                        .on_disabled_hover_text("a run is in progress");
+                    chip.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::Role::Button,
+                            ui.is_enabled(),
+                            format!("remove run {} from the journal", session.run),
+                        )
+                    });
+                    if chip.clicked() {
                         action = Some(Action::Remove(session.clone()));
                     }
                 });

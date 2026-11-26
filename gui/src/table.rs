@@ -25,13 +25,6 @@ const NAME_MIN_WIDTH: f32 = 80.0;
 const SIZE_WIDTH: f32 = 70.0;
 const SIZE_MIN_WIDTH: f32 = 50.0;
 const REMOVE_WIDTH: f32 = 70.0;
-/// The remove glyph's hover chip: #873731, so the row's one destructive control
-/// is unmistakable.
-const REMOVE_HOVER: Color32 = Color32::from_rgb(0x87, 0x37, 0x31);
-/// The chip hugs the glyph rather than the column, so it fits inside a row.
-const REMOVE_CHIP: f32 = 18.0;
-/// Rounding on the chip, close to the theme's button radius.
-const REMOVE_CHIP_CORNER: u8 = 4;
 /// The sort marker beside a header: a painted triangle, not a glyph.
 const ARROW_WIDTH: f32 = 10.0;
 const ARROW_HEIGHT: f32 = 6.0;
@@ -173,38 +166,10 @@ pub fn show(ui: &mut egui::Ui, model: &mut PlanModel) -> Change {
                 row.col(|ui| {
                     row_fill(&painter, ui, entry.status, at);
                     cell(ui, |ui| {
-                        center(ui, REMOVE_CHIP, |ui| {
-                            let (_, rect) = ui.allocate_space(egui::Vec2::splat(REMOVE_CHIP));
-                            // A real widget (not painted text) so the row's one
-                            // action can be focused, announced and clicked from
-                            // the keyboard.
-                            let chip = ui
-                                .interact(
-                                    rect,
-                                    ui.scope_id().with("remove-row"),
-                                    egui::Sense::click(),
-                                )
-                                .on_hover_text("remove this row from the list")
-                                .on_hover_cursor(egui::CursorIcon::PointingHand);
-                            if chip.hovered() {
-                                ui.painter().rect_filled(
-                                    rect,
-                                    egui::CornerRadius::same(REMOVE_CHIP_CORNER),
-                                    REMOVE_HOVER,
-                                );
-                            }
-                            let color = if chip.hovered() {
-                                Color32::WHITE
-                            } else {
-                                ui.visuals().text_color()
-                            };
-                            ui.painter().text(
-                                rect.center(),
-                                egui::Align2::CENTER_CENTER,
-                                "✕",
-                                egui::TextStyle::Body.resolve(ui.style()),
-                                color,
-                            );
+                        center(ui, style::REMOVE_CHIP, |ui| {
+                            // The row's one action, focusable and announced.
+                            let chip = style::remove_chip(ui)
+                                .on_hover_text("remove this row from the list");
                             chip.widget_info(|| {
                                 egui::WidgetInfo::labeled(
                                     egui::Role::Button,

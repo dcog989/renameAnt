@@ -155,7 +155,7 @@ fn the_window_scans_plans_applies_and_undoes() {
     // Apply, through the confirmation. The modal's own buttons are clicked via
     // AccessKit: a pointer click at their rect is swallowed by the modal's
     // backdrop, while the AccessKit Click action reaches the button.
-    harness.get_by_label("Rename Now").click();
+    harness.get_by_label("Rename now").click();
     harness.step();
     assert!(matches!(harness.state().overlay, Some(Overlay::ConfirmApply { .. })));
     pump_for_labels(&mut harness, "Apply", 1);

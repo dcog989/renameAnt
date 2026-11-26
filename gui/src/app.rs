@@ -583,10 +583,14 @@ impl App {
             ui.spacing_mut().interact_size.y = TOP_ROW_HEIGHT;
             ui.horizontal(|ui| {
                 ui.add_enabled_ui(!self.browsing, |ui| {
-                    if style::pointer(ui.button("Add files…")).clicked() {
+                    if style::pointer(ui.button(egui::RichText::new("Add files…").heading()))
+                        .clicked()
+                    {
                         self.pick_files();
                     }
-                    if style::pointer(ui.button("Add folder…")).clicked() {
+                    if style::pointer(ui.button(egui::RichText::new("Add folder…").heading()))
+                        .clicked()
+                    {
                         self.pick_folder();
                     }
                 });
@@ -732,7 +736,7 @@ impl App {
             if ui
                 .add_enabled(
                     ready,
-                    egui::Button::new(egui::RichText::new("Rename Now").size(ACTION_TEXT_SIZE)),
+                    egui::Button::new(egui::RichText::new("Rename now").size(ACTION_TEXT_SIZE)),
                 )
                 .on_hover_text("nothing is written before this")
                 .clicked()

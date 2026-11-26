@@ -34,11 +34,6 @@ pub const ACCENT_LIGHT: Color32 = Color32::from_rgb(240, 195, 150);
 pub const ACCENT_BRIGHT: Color32 = Color32::from_rgb(255, 145, 65);
 /// Width of a focus outline.
 const FOCUS_WIDTH: f32 = 1.0;
-/// The panel title bars: the accent at low strength, so it reads as a tint
-/// rather than a highlight.
-const HEADER_FILL: Color32 = Color32::from_rgba_unmultiplied_const(216, 113, 41, 40);
-/// The line under a title bar: the accent, a little stronger.
-const HEADER_LINE_COLOR: Color32 = Color32::from_rgba_unmultiplied_const(216, 113, 41, 130);
 /// Width of the line under a title bar.
 const HEADER_LINE_WIDTH: f32 = 1.0;
 
@@ -132,18 +127,60 @@ pub fn pointer(response: Response) -> Response {
     response.on_hover_cursor(CursorIcon::PointingHand)
 }
 
-/// A panel's full-bleed title bar: the accent fill across the panel width, with
-/// a line under it and the title padded inside. The title is monospace, like the
-/// fields below it.
+/// The remove glyph's hover chip: #873731, so a destructive control is
+/// unmistakable.
+const REMOVE_HOVER: Color32 = Color32::from_rgb(0x87, 0x37, 0x31);
+/// The chip hugs its glyph rather than its cell, so it fits a table row or a
+/// journal line.
+pub const REMOVE_CHIP: f32 = 18.0;
+/// Rounding on the chip, close to the theme's button radius.
+const REMOVE_CHIP_CORNER: u8 = 4;
+
+/// A square remove chip: the same target and look in the table and the journal.
+/// The caller supplies the hover text and the accessible name.
+pub fn remove_chip(ui: &mut Ui) -> Response {
+    let (_, rect) = ui.allocate_space(Vec2::splat(REMOVE_CHIP));
+    // A real widget, not painted text, so the action can be focused and clicked
+    // from the keyboard. A disabled `ui` also disables the click. The unique id,
+    // not the scope id: sibling journal rows share a scope, and one id across
+    // three chips makes any hover or click apply to all of them.
+    let chip = ui.interact(rect, ui.unique_id().with("remove"), egui::Sense::click());
+    if chip.hovered() {
+        ui.painter().rect_filled(
+            rect,
+            egui::CornerRadius::same(REMOVE_CHIP_CORNER),
+            REMOVE_HOVER,
+        );
+    }
+    let color = if chip.hovered() {
+        Color32::WHITE
+    } else if ui.is_enabled() {
+        ui.visuals().text_color()
+    } else {
+        ui.visuals().weak_text_color()
+    };
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        "✕",
+        TextStyle::Body.resolve(ui.style()),
+        color,
+    );
+    chip.on_hover_cursor(CursorIcon::PointingHand)
+}
+
+/// A panel's full-bleed title bar: a faint neutral fill across the panel width,
+/// with a line under it and the title padded inside. The title is monospace,
+/// like the fields below it.
 pub fn panel_heading(ui: &mut Ui, title: &str) {
-    let bar = Frame::new().fill(HEADER_FILL).inner_margin(HEADER_PADDING).show(ui, |ui| {
+    let (fill, line) = {
+        let visuals = ui.visuals();
+        (visuals.faint_bg_color, visuals.widgets.noninteractive.bg_stroke.color)
+    };
+    let bar = Frame::new().fill(fill).inner_margin(HEADER_PADDING).show(ui, |ui| {
         ui.set_min_width(ui.available_width());
         ui.heading(RichText::new(title).family(FontFamily::Monospace));
     });
     let rect = bar.response.rect;
-    ui.painter().hline(
-        rect.x_range(),
-        rect.bottom(),
-        Stroke::new(HEADER_LINE_WIDTH, HEADER_LINE_COLOR),
-    );
+    ui.painter().hline(rect.x_range(), rect.bottom(), Stroke::new(HEADER_LINE_WIDTH, line));
 }
