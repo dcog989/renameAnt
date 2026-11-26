@@ -85,28 +85,41 @@ fn card(
     ui.set_min_width(ui.available_width());
     let color = crate::style::card_text(ui, edit.enabled);
     ui.horizontal(|ui| {
-        crate::style::pointer(ui.add(egui::Checkbox::without_text(&mut edit.enabled)))
-            .accessible_name(name(index, "enabled"));
         let toggle_text = if edit.enabled { "turn this rule off" } else { "turn this rule on" };
-        // The icon and title are one button, so they share one hover state and
-        // one target. The colour is scoped: the row's other buttons keep the
-        // base text colour.
-        let toggle = ui
+        // The icon and the name both toggle the rule; the checkbox sits between
+        // them, like every other checkbox before its label. The colour is
+        // scoped to each, so the row's other buttons keep the base text colour.
+        let icon = ui
             .scope(|ui| {
                 ui.style_mut().visuals.widgets.inactive.fg_stroke.color = color;
                 ui.add(
-                    egui::Button::new((
+                    egui::Button::new(
                         RichText::new(icon(edit.kind)).size(crate::style::RULE_ICON_SIZE),
-                        RichText::new(edit.kind.label()).size(crate::style::RULE_TITLE_SIZE),
-                    ))
-                    .gap(ui.spacing().item_spacing.x)
+                    )
                     .frame(false),
                 )
             })
             .inner
             .on_hover_text(toggle_text)
             .accessible_name(name(index, "on or off"));
-        if toggle.clicked() {
+        if icon.clicked() {
+            edit.enabled = !edit.enabled;
+        }
+        crate::style::pointer(ui.add(egui::Checkbox::without_text(&mut edit.enabled)))
+            .accessible_name(name(index, "enabled"));
+        let title = ui
+            .scope(|ui| {
+                ui.style_mut().visuals.widgets.inactive.fg_stroke.color = color;
+                ui.add(
+                    egui::Button::new(
+                        RichText::new(edit.kind.label()).size(crate::style::RULE_TITLE_SIZE),
+                    )
+                    .frame(false),
+                )
+            })
+            .inner
+            .on_hover_text(toggle_text);
+        if title.clicked() {
             edit.enabled = !edit.enabled;
         }
 
