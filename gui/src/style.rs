@@ -57,6 +57,20 @@ const UNCHANGED_DARK: Color32 = Color32::from_rgb(192, 192, 192);
 const UNCHANGED_LIGHT: Color32 = Color32::from_rgb(95, 99, 104);
 /// Selected text: dark on the accent, which is light enough in either theme.
 const SELECTED_TEXT: Color32 = Color32::from_rgb(43, 20, 21);
+/// The three text tiers are one colour at a named opacity: bright at 100%,
+/// dim and disabled below it, about 35 APCA Lc apart; bright clears Lc 75.
+/// A saturated link blue cannot reach 75 on near-black, so links keep their
+/// hue near 60.
+const TEXT_DARK: Color32 = Color32::WHITE;
+const TEXT_LIGHT: Color32 = Color32::from_gray(30);
+/// Dim lands near gray 198 (dark) and 121 (light).
+const DIM_ALPHA_DARK: f32 = 0.75;
+const DIM_ALPHA_LIGHT: f32 = 0.58;
+/// Disabled lands near gray 134 (dark) and 187 (light).
+const DISABLED_ALPHA_DARK: f32 = 0.47;
+const DISABLED_ALPHA_LIGHT: f32 = 0.28;
+const LINK_DARK: Color32 = Color32::from_rgb(60, 190, 255);
+const LINK_LIGHT: Color32 = Color32::from_rgb(0, 130, 230);
 
 fn themed(ui: &Ui, light: Color32, dark: Color32) -> Color32 {
     if ui.visuals().dark_mode { dark } else { light }
@@ -94,12 +108,23 @@ pub fn apply(ctx: &Context) {
         style.visuals.selection.bg_fill =
             if style.visuals.dark_mode { ACCENT } else { ACCENT_LIGHT };
         style.visuals.selection.stroke = Stroke::new(FOCUS_WIDTH, SELECTED_TEXT);
+        // Text colours are the theme's, so every panel and the About page read
+        // the same and meet APCA.
+        let dark = style.visuals.dark_mode;
+        let text = if dark { TEXT_DARK } else { TEXT_LIGHT };
+        style.visuals.widgets.noninteractive.fg_stroke.color = text;
+        let dim = if dark { DIM_ALPHA_DARK } else { DIM_ALPHA_LIGHT };
+        style.visuals.weak_text_color = Some(text.gamma_multiply(dim));
+        style.visuals.hyperlink_color = if dark { LINK_DARK } else { LINK_LIGHT };
+        style.visuals.disabled_alpha =
+            if dark { DISABLED_ALPHA_DARK } else { DISABLED_ALPHA_LIGHT };
         // A pressed widget fills with the accent; a hovered one takes an accent
-        // outline and, for text and drag handles, an accent stroke.
+        // outline, while its text keeps the theme's APCA-checked colour.
         style.visuals.widgets.active.weak_bg_fill = ACCENT;
         style.visuals.widgets.active.bg_fill = ACCENT;
         style.visuals.widgets.hovered.bg_stroke = Stroke::new(HOVER_OUTLINE_WIDTH, ACCENT);
-        style.visuals.widgets.hovered.fg_stroke = Stroke::new(HOVER_STROKE_WIDTH, ACCENT_LIGHT);
+        let hover_text = if dark { TEXT_DARK } else { TEXT_LIGHT };
+        style.visuals.widgets.hovered.fg_stroke = Stroke::new(HOVER_STROKE_WIDTH, hover_text);
         // Every button reads this, so a clickable control reads as one.
         style.visuals.interact_cursor = Some(CursorIcon::PointingHand);
     });
