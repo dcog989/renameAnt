@@ -105,8 +105,18 @@ fn card(
         if icon.clicked() {
             edit.enabled = !edit.enabled;
         }
-        crate::style::pointer(ui.add(egui::Checkbox::without_text(&mut edit.enabled)))
-            .accessible_name(name(index, "enabled"));
+        let checked = edit.enabled;
+        let checkbox = ui
+            .scope(|ui| {
+                // The tick is the widget's foreground; the box has no text, so
+                // the accent reaches the tick alone.
+                if checked {
+                    ui.style_mut().visuals.widgets.inactive.fg_stroke.color = crate::style::ACCENT;
+                }
+                ui.add(egui::Checkbox::without_text(&mut edit.enabled))
+            })
+            .inner;
+        crate::style::pointer(checkbox).accessible_name(name(index, "enabled"));
         let title = ui
             .scope(|ui| {
                 ui.style_mut().visuals.widgets.inactive.fg_stroke.color = color;
