@@ -84,57 +84,31 @@ fn card(
     // make the card fill it.
     ui.set_min_width(ui.available_width());
     let color = crate::style::card_text(ui, edit.enabled);
-    // The parts are one toggle, so they read hover from the block's last rect
-    // rather than each from its own, and all change on the same frame.
-    let block_id = ui.scope_id().with(("toggle block", index));
-    let hot = ui
-        .data(|data| data.get_temp::<egui::Rect>(block_id))
-        .is_some_and(|rect| ui.rect_contains_pointer(rect));
     ui.horizontal(|ui| {
         let toggle_text = if edit.enabled { "turn this rule off" } else { "turn this rule on" };
-        let hot_color = if hot { crate::style::ACCENT_LIGHT } else { color };
+        // The icon and title are one button, so they share one hover state and
+        // one target. The colour is scoped: the row's other buttons keep the
+        // base text colour.
         let toggle = ui
-            .add(
-                egui::Button::new(
-                    RichText::new(icon(edit.kind))
-                        .size(crate::style::RULE_ICON_SIZE)
-                        .color(hot_color),
+            .scope(|ui| {
+                ui.style_mut().visuals.widgets.inactive.fg_stroke.color = color;
+                ui.add(
+                    egui::Button::new((
+                        RichText::new(icon(edit.kind)).size(crate::style::RULE_ICON_SIZE),
+                        RichText::new(edit.kind.label()).size(crate::style::RULE_TITLE_SIZE),
+                    ))
+                    .gap(ui.spacing().item_spacing.x)
+                    .frame(false),
                 )
-                .frame(false),
-            )
+            })
+            .inner
+            .on_hover_text(toggle_text)
             .accessible_name(name(index, "on or off"));
         if toggle.clicked() {
             edit.enabled = !edit.enabled;
         }
-        let title = crate::style::pointer(
-            ui.add(
-                egui::Label::new(
-                    RichText::new(edit.kind.label())
-                        .color(hot_color)
-                        .size(crate::style::RULE_TITLE_SIZE),
-                )
-                    .wrap_mode(egui::TextWrapMode::Extend)
-                    .sense(egui::Sense::click()),
-            ),
-        );
-        if title.clicked() {
-            edit.enabled = !edit.enabled;
-        }
-        let idle = ui.style().visuals.widgets.inactive;
-        if hot {
-            let hovered = ui.style().visuals.widgets.hovered;
-            ui.style_mut().visuals.widgets.inactive = hovered;
-        }
-        let checkbox =
-            crate::style::pointer(ui.add(egui::Checkbox::without_text(&mut edit.enabled)))
-                .accessible_name(name(index, "enabled"));
-        if hot {
-            ui.style_mut().visuals.widgets.inactive = idle;
-        }
-        // One hover target and one tooltip: the parts are all the same toggle.
-        let block = toggle.union(title).union(checkbox);
-        ui.data_mut(|data| data.insert_temp(block_id, block.rect));
-        block.on_hover_text(toggle_text);
+        crate::style::pointer(ui.add(egui::Checkbox::without_text(&mut edit.enabled)))
+            .accessible_name(name(index, "enabled"));
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if !edit.builtin
