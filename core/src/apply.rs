@@ -1,5 +1,6 @@
 //! Two-phase execution, syscalls and journaling.
 
+use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::fmt;
 use std::io;
@@ -294,15 +295,38 @@ pub fn apply(plan: &Plan, options: &ApplyOptions) -> io::Result<ApplyReport> {
 /// Reverse-applies a run's completed renames, newest first, appending the
 /// inverse records to the same journal so redo is just an undo of the undo.
 ///
-/// Undo is not transactional: a row whose file is no longer where the journal
-/// expects it fails and the rest continue. It never overwrites.
+/// A row a later undo run already reversed is skipped, so a second undo writes
+/// nothing. Undo is not transactional: a row whose file is no longer where the
+/// journal expects it fails and the rest continue. It never overwrites.
 pub fn undo(options: &ApplyOptions, target: RunId) -> io::Result<ApplyReport> {
     // Lock before reading: the lock is held for the whole undo, so a concurrent
     // apply cannot claim this undo's run id.
     let journal = Journal::open_syncing(options.journal.clone(), options.sync_every())?;
     let mut completed = Journal::renames_with_id(&options.journal, target)?;
     completed.reverse();
+    // A row a later undo run already reversed is not reversed again: undo is
+    // idempotent even when the panel misses the mark.
+    let reversed = reversed_by_later_runs(&options.journal, target)?;
+    completed.retain(|record| !reversed.contains(&(record.from.clone(), record.to.clone())));
     reverse(options, journal, target, completed)
+}
+
+/// The renames of `target` that a later run with `undo_of` recorded the
+/// inverse of, as `(from, to)` of the target's own records.
+fn reversed_by_later_runs(
+    path: &Path,
+    target: RunId,
+) -> io::Result<HashSet<(PathBuf, PathBuf)>> {
+    let mut reversed = HashSet::new();
+    for session in Journal::sessions(path)? {
+        if session.undo_of != Some(target) {
+            continue;
+        }
+        for (from, to) in Journal::renames(path, session.run)? {
+            reversed.insert((to, from));
+        }
+    }
+    Ok(reversed)
 }
 
 /// Reverses one recorded rename of `target`, leaving the rest of the run alone.
@@ -345,7 +369,7 @@ fn reverse(
     if completed.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            format!("run {target} has no renames to reverse"),
+            format!("run {target} has no renames left to reverse"),
         ));
     }
     let run = Journal::next_run_id(&options.journal)?;
@@ -764,6 +788,43 @@ mod tests {
         let redone = undo(&fixture.options, undone.run).expect("redo");
         assert_eq!(redone.renamed(), 2);
         assert!(fixture.exists("p-a"));
+    }
+
+    #[test]
+    fn undo_does_not_reverse_a_run_twice() {
+        let fixture = fixture(&["a", "b"]);
+        let first = apply(&fixture.plan(prefix("p-")), &fixture.options).expect("apply");
+        undo(&fixture.options, first.run).expect("the first undo");
+
+        let refused = undo(&fixture.options, first.run);
+
+        assert!(refused.is_err(), "nothing is left to reverse");
+        assert_eq!(
+            Journal::sessions(&fixture.options.journal).expect("sessions").len(),
+            2,
+            "the second undo writes no run"
+        );
+        assert!(fixture.exists("a"));
+        assert!(fixture.exists("b"));
+    }
+
+    #[test]
+    fn undo_skips_rows_a_later_undo_already_reversed() {
+        let fixture = fixture(&["a", "b"]);
+        let first = apply(&fixture.plan(prefix("p-")), &fixture.options).expect("apply");
+        let row = Journal::renames(&fixture.options.journal, first.run)
+            .expect("renames")
+            .into_iter()
+            .find(|(from, _)| from == &fixture.dir.join("a"))
+            .expect("the row for a");
+        undo_one(&fixture.options, first.run, &row.0, &row.1).expect("undo one");
+
+        let undone = undo(&fixture.options, first.run).expect("the rest");
+
+        assert_eq!(undone.renamed(), 1, "only b was left to reverse");
+        assert_eq!(undone.failed(), 0, "a reversed row is not a failure");
+        assert!(fixture.exists("a"));
+        assert!(fixture.exists("b"));
     }
 
     #[test]
