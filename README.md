@@ -12,6 +12,7 @@ Linux bulk rename utility: a minimal GUI for fast and safe renaming of files and
 - **Undo**: append-only journal; reverse any run or one row of it, partial runs included. Runs older than 60 days are pruned at startup; the newest run is always kept.
 - **Files**: folders or single files, optional subdirectories, kind and name filters, column sort, non-UTF-8 names kept as bytes.
 - **Speed**: fast mode defers size and modified reads and batches journal syncs.
+- **Logs**: the level is set in About; lines append to `renameant.log` beside the journal.
 
 ### Default Rules
 

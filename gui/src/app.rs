@@ -21,11 +21,13 @@ use crate::dialogs::{self, Choice};
 use crate::edit::{RuleEdit, default_rules, with_defaults};
 use crate::editor;
 use crate::history;
+use crate::logging;
 use crate::logo;
 use crate::model::{PlanModel, Sort, SortKey};
 use crate::style;
 use crate::table;
 use crate::worker::{Browse, Done, Job, Picked, Worker};
+use crate::{log_debug, log_error, log_info, log_warn};
 
 /// The preview recomputes on a debounce, not on every keystroke.
 const DEBOUNCE: Duration = Duration::from_millis(100);
@@ -92,7 +94,7 @@ pub struct App {
     /// on the next edit, not on every frame.
     save_attempted: Vec<RuleEdit>,
     config_path: PathBuf,
-    /// Saved with the rules; the logger reads it once logging lands.
+    /// Saved with the rules; the logger obeys it.
     log_level: config::LogLevel,
     /// The rules and filter the current plan was built from.
     planned: (RuleSet, Filter),
@@ -129,6 +131,9 @@ pub struct App {
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         style::apply(&cc.egui_ctx);
+        // The saved level is not known until the config is read; the default
+        // still lets a read failure reach the log.
+        logging::init(config::LogLevel::default());
         let config_path = config::default_path().unwrap_or_else(|_| PathBuf::from(FALLBACK_CONFIG));
         let (edits, status, log_level) = match config::load(&config_path) {
             Ok((edits, unsupported, log_level)) => {
@@ -136,19 +141,28 @@ impl App {
                 // A later save writes only the rules this version knows. Keep
                 // the original file so a newer version's rule is not lost.
                 if !unsupported.is_empty() {
+                    log_warn!(
+                        "saved rules this version cannot read: {}",
+                        unsupported.join(", ")
+                    );
                     let backup = config_path.with_extension("json.bak");
                     if let Err(error) = std::fs::copy(&config_path, &backup) {
+                        log_error!("the rules could not be backed up: {error}");
                         status.push_str(&format!("; the rules could not be backed up: {error}"));
                     }
                 }
                 (with_defaults(edits), status, log_level)
             }
-            Err(error) => (
-                default_rules(),
-                format!("the saved rules could not be read: {error}"),
-                config::LogLevel::default(),
-            ),
+            Err(error) => {
+                log_error!("the settings could not be read: {error}");
+                (
+                    default_rules(),
+                    format!("the saved rules could not be read: {error}"),
+                    config::LogLevel::default(),
+                )
+            }
         };
+        logging::set_level(log_level);
         let journal = journal::default_path()
             .expect("main resolved the state directory before opening the window");
         let mut app = App {
@@ -182,6 +196,14 @@ impl App {
             overlay: None,
             about: About::default(),
         };
+        log_info!(
+            "renameAnt {} started: {} rule(s), log level {}, config {}, journal {}",
+            env!("CARGO_PKG_VERSION"),
+            app.edits.len(),
+            app.log_level.as_str(),
+            app.config_path.display(),
+            app.journal.display()
+        );
         // Pruning and listing the journal read the whole file; keep them off
         // the first frame.
         app.dispatch(Job::LoadJournal(app.journal.clone()));
@@ -224,6 +246,7 @@ impl App {
         }
         self.planned = (rules, filter);
         self.dirty_since = None;
+        log_debug!("replanned {} row(s)", self.model.plan.rows.len());
     }
 
     /// Recompute once the editing has stopped for [`DEBOUNCE`].
@@ -258,7 +281,10 @@ impl App {
         self.save_attempted.clone_from(&self.edits);
         match config::save(&self.config_path, &self.edits, self.log_level) {
             Ok(()) => self.saved.clone_from(&self.edits),
-            Err(error) => self.status = format!("the settings could not be saved: {error}"),
+            Err(error) => {
+                log_error!("the settings could not be saved: {error}");
+                self.status = format!("the settings could not be saved: {error}");
+            }
         }
     }
 
@@ -302,6 +328,11 @@ impl App {
             return;
         }
         self.status = "scanning…".to_owned();
+        log_info!(
+            "scanning {} picked path(s){}",
+            self.added.len(),
+            if self.recursive { ", recursive" } else { "" }
+        );
         self.dispatch(Job::Scan(self.added.clone(), self.recursive));
     }
 
@@ -317,6 +348,7 @@ impl App {
             let path = match std::path::absolute(&path) {
                 Ok(path) => path,
                 Err(error) => {
+                    log_warn!("cannot use {}: {error}", path.display());
                     self.status = format!("cannot use {}: {error}", path.display());
                     continue;
                 }
@@ -324,6 +356,7 @@ impl App {
             // A typed path that does not exist would otherwise scan as an empty
             // selection with no explanation.
             if let Err(error) = std::fs::symlink_metadata(&path) {
+                log_warn!("cannot use {}: {error}", path.display());
                 self.status = format!("cannot use {}: {error}", path.display());
                 continue;
             }
@@ -370,6 +403,11 @@ impl App {
         self.run_error = None;
         let options = ApplyOptions { journal: self.journal.clone(), batched_sync: self.fast };
         self.status = "applying…".to_owned();
+        log_info!(
+            "applying {} plan row(s){}",
+            self.model.plan.rows.len(),
+            if self.fast { ", fast mode" } else { "" }
+        );
         self.dispatch(Job::Apply(Box::new(self.model.plan.clone()), options));
     }
 
@@ -396,6 +434,7 @@ impl App {
     fn start_undo(&mut self, run: RunId) {
         self.run_error = None;
         self.status = format!("undoing run {run}…");
+        log_info!("undoing run {run}");
         let options =
             ApplyOptions { batched_sync: self.fast, ..ApplyOptions::new(self.journal.clone()) };
         self.dispatch(Job::Undo(options, run));
@@ -404,6 +443,7 @@ impl App {
     fn start_undo_row(&mut self, run: RunId, from: PathBuf, to: PathBuf) {
         self.run_error = None;
         self.status = format!("undoing one rename in run {run}…");
+        log_info!("undoing run {run}: {} -> {}", from.display(), to.display());
         let options =
             ApplyOptions { batched_sync: self.fast, ..ApplyOptions::new(self.journal.clone()) };
         self.dispatch(Job::UndoOne(options, run, from, to));
@@ -411,11 +451,13 @@ impl App {
 
     fn start_remove(&mut self, run: RunId) {
         self.status = format!("removing run {run} from the journal…");
+        log_info!("removing run {run} from the journal");
         self.dispatch(Job::Forget(self.journal.clone(), run));
     }
 
     fn start_clear(&mut self) {
         self.status = "clearing the journal…".to_owned();
+        log_info!("clearing the journal");
         self.dispatch(Job::Clear(self.journal.clone()));
     }
 
@@ -442,6 +484,14 @@ impl App {
             Done::Scanned(result) => match result {
                 Ok(Scan { entries, index, unreadable, truncated }) => {
                     let count = entries.len();
+                    log_info!(
+                        "scan: {count} entr{}, {}",
+                        if count == 1 { "y" } else { "ies" },
+                        if truncated { "truncated" } else { "complete" }
+                    );
+                    if !unreadable.is_empty() {
+                        log_warn!("{} folder(s) could not be read", unreadable.len());
+                    }
                     self.scan_truncated = truncated;
                     self.scan_unreadable = unreadable;
                     self.status = if truncated {
@@ -463,6 +513,7 @@ impl App {
                 Err(error) => {
                     // The old rows belong to a selection that just failed
                     // to scan; applying them would rename the wrong files.
+                    log_error!("the picked paths could not be read: {error}");
                     self.model.clear();
                     self.scan_truncated = false;
                     self.scan_unreadable.clear();
@@ -476,6 +527,7 @@ impl App {
                         self.journal_error = None;
                     }
                     Err(error) => {
+                        log_error!("the journal could not be read: {error}");
                         self.journal_error = Some(format!(
                             "the journal could not be read: {error}; its runs cannot be \
                              shown or undone from here"
@@ -483,11 +535,13 @@ impl App {
                     }
                 }
                 if let Some(error) = prune_error {
+                    log_warn!("the journal could not be pruned: {error}");
                     self.append_status(&format!("the journal could not be pruned: {error}"));
                 }
                 let interrupted =
                     self.sessions.iter().filter(|session| session.interrupted).count();
                 if interrupted > 0 {
+                    log_warn!("{interrupted} interrupted run(s) in the journal");
                     self.append_status(&format!(
                         "{interrupted} interrupted {} in the journal: reverse {} from the journal",
                         if interrupted == 1 { "run" } else { "runs" },
@@ -528,6 +582,7 @@ impl App {
                             self.journal_error = None;
                         }
                         Err(error) => {
+                            log_error!("the journal could not be read after the run: {error}");
                             self.journal_error = Some(format!(
                                 "the journal could not be read after the run: {error}; its \
                                  undo records may not be shown"
@@ -543,8 +598,12 @@ impl App {
                             Some(undone) => format!("Undo of run {undone}"),
                             None => format!("Applied run {run}"),
                         };
+                        let skipped = report.skipped();
                         let (renamed, failed) = (report.renamed(), report.failed());
-                        let counts = (renamed, failed, report.skipped());
+                        let counts = (renamed, failed, skipped);
+                        log_info!(
+                            "run {run}: {renamed} renamed, {failed} failed, {skipped} skipped"
+                        );
                         self.status = format!("run {run}: {renamed} renamed, {failed} failed");
                         self.follow_renames(&report);
                         let listed = dialogs::listed_indices(&report);
@@ -553,6 +612,7 @@ impl App {
                             Some(Overlay::Report { title, report, listed, rest, counts });
                     }
                     Err(error) => {
+                        log_error!("the run stopped: {error}");
                         self.run_error = Some(format!(
                             "the run stopped: {error}; any renames that completed stay on \
                              disk, and the journal holds their undo"
@@ -566,6 +626,7 @@ impl App {
                 Ok(()) => {
                     // A change landed, so every cached read is stale even if
                     // the new list cannot be read back.
+                    log_info!("the journal was changed");
                     self.history.forget_all();
                     match sessions {
                         Ok(sessions) => {
@@ -578,6 +639,7 @@ impl App {
                             };
                         }
                         Err(error) => {
+                            log_error!("the journal was changed but could not be re-read: {error}");
                             self.journal_error = Some(format!(
                                 "the journal was changed, but its runs could not be \
                                  re-read: {error}"
@@ -586,6 +648,7 @@ impl App {
                     }
                 }
                 Err(error) => {
+                    log_error!("the journal could not be changed: {error}");
                     self.status = format!("the journal could not be changed: {error}");
                 }
             },
@@ -953,6 +1016,8 @@ impl eframe::App for App {
         self.maybe_stat();
         self.show_overlay(&ctx);
         if self.about.show(&ctx, &mut self.log_level) {
+            logging::set_level(self.log_level);
+            log_info!("log level set to {}", self.log_level.as_str());
             self.save_settings();
         }
     }

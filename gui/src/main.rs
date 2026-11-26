@@ -10,6 +10,7 @@ mod edit;
 mod editor;
 mod format;
 mod history;
+mod logging;
 mod logo;
 mod model;
 mod style;

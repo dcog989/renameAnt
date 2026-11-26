@@ -1,7 +1,7 @@
 //! The settings on disk: `$XDG_CONFIG_HOME/renameant/rules.json`.
 //!
 //! The rules are kept, each with its on/off state, in order, plus the log level
-//! the logger will read. The picked paths, the filters and the removed rows are
+//! the logger obeys. The picked paths, the filters and the removed rows are
 //! per-session.
 
 use std::io;
@@ -15,7 +15,7 @@ use crate::edit::RuleEdit;
 const CONFIG_DIR: &str = "renameant";
 const CONFIG_FILE: &str = "rules.json";
 
-/// How much the app logs. Saved now; the logger reads it once logging lands.
+/// How much the app writes to its log file.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LogLevel {
@@ -37,6 +37,17 @@ impl LogLevel {
             Self::Info => "info",
             Self::Debug => "debug",
             Self::Trace => "trace",
+        }
+    }
+
+    /// Error is the quietest, trace the loudest.
+    pub const fn rank(self) -> u8 {
+        match self {
+            Self::Error => 1,
+            Self::Warn => 2,
+            Self::Info => 3,
+            Self::Debug => 4,
+            Self::Trace => 5,
         }
     }
 }

@@ -13,6 +13,7 @@ use egui::{
 
 use crate::config;
 use crate::config::LogLevel;
+use crate::logging;
 use crate::logo;
 
 const WINDOW_ID: &str = "renameant-about";
@@ -34,7 +35,6 @@ const SYSTEM_INFO_COPY: &str = "Copy environment info";
 const COPY_FEEDBACK: f64 = 2.0;
 const LOG_ROW_LABEL: &str = "Logs";
 const LOG_LEVEL_LABEL: &str = "Log level";
-const LOG_DIR: &str = "logs";
 const COPYRIGHT: &str = "© 2026 dcog989";
 const LINK_WEBSITE: &str = "Website";
 const LINK_RELEASES: &str = "Releases";
@@ -294,13 +294,8 @@ fn paths() -> [(&'static str, Option<PathBuf>, bool); 4] {
         ("Config", config::default_path().ok(), false),
         ("Journal", renameant_core::journal::default_path().ok(), false),
         ("Binary", std::env::current_exe().ok(), true),
-        (LOG_ROW_LABEL, log_directory(), false),
+        (LOG_ROW_LABEL, logging::directory(), false),
     ]
-}
-
-/// The directory the logger will write under, beside the journal.
-fn log_directory() -> Option<PathBuf> {
-    Some(renameant_core::journal::default_path().ok()?.parent()?.join(LOG_DIR))
 }
 
 fn path_value(ui: &mut egui::Ui, path: Option<PathBuf>, open_folder: bool) {
@@ -351,7 +346,7 @@ fn log_level_combo(ui: &mut egui::Ui, level: &mut LogLevel) -> bool {
             }
         })
         .response
-        .on_hover_text("Log level: saved now, used once logging is enabled.");
+        .on_hover_text("Messages at this level and above are written to the log file.");
     changed
 }
 
