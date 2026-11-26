@@ -1,22 +1,15 @@
-//! The modals: the apply confirmation, the undo confirmation and a run report.
-//!
-//! The confirmation reads "Apply N of M" and names what will be skipped. None
-//! of this writes anything; it only reports the user's choice back to the app.
+//! The modals: the undo confirmation and a run report.
 
 use std::path::{Path, PathBuf};
 
 use egui::Ui;
 use renameant_core::apply::{ApplyReport, Outcome};
 use renameant_core::journal::{RunId, Session};
-use renameant_core::plan::PlanRow;
 
 use crate::format;
 use crate::history;
-use crate::model::Totals;
 use crate::style::{danger, warning};
 
-/// Skipped rows named in the confirmation before it says "and N more".
-pub(crate) const SKIP_ROWS_SHOWN: usize = 20;
 /// Rows listed in a run report before it says "and N more".
 const REPORT_ROWS_SHOWN: usize = 200;
 const REPORT_HEIGHT: f32 = 260.0;
@@ -25,40 +18,11 @@ const REPORT_HEIGHT: f32 = 260.0;
 #[derive(Clone)]
 pub enum Choice {
     None,
-    Apply,
     UndoRun(RunId),
     UndoRow { run: RunId, from: PathBuf, to: PathBuf },
     Remove(RunId),
     ClearAll,
     Close,
-}
-
-pub fn confirm_apply(ui: &mut Ui, skipped_rows: &[PlanRow], totals: Totals, fast: bool) -> Choice {
-    let (actionable, candidates, skipped) = (totals.actionable, totals.candidates, totals.skipped);
-    ui.heading(format!("Apply {actionable} of {candidates}"));
-    if fast {
-        ui.colored_label(
-            warning(ui),
-            "Fast mode is on: the undo records are written in batches, so a crash mid-run can \
-             leave the last renames of this run without an undo record.",
-        );
-    }
-    if skipped > 0 {
-        ui.label(format!("{skipped} rows are not applied:"));
-        for row in skipped_rows {
-            ui.monospace(format!(
-                "{}: {} -> {}",
-                format::status_label(row.status),
-                format::file_text(&row.src),
-                format::file_text(&row.dst)
-            ));
-        }
-        let rest = skipped.saturating_sub(skipped_rows.len());
-        if rest > 0 {
-            ui.label(format!("and {rest} more"));
-        }
-    }
-    buttons(ui, "Apply", "Apply", Choice::Apply)
 }
 
 pub fn confirm_undo(ui: &mut Ui, session: &Session) -> Choice {

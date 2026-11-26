@@ -1,6 +1,6 @@
 //! Headless UI driving, so the whole window is exercised rather than the model
-//! alone. Panels, the rule presets, the apply confirmation, the run
-//! report and the undo are all clicked by their AccessKit label.
+//! alone. Panels, the rule presets, the run report and the undo are all clicked
+//! by their AccessKit label.
 
 use std::env;
 use std::fs;
@@ -73,7 +73,6 @@ fn pump_for_labels(harness: &mut Harness<'_, App>, label: &str, at_least: usize)
 fn overlay_name(app: &App) -> &'static str {
     match &app.overlay {
         None => "none",
-        Some(Overlay::ConfirmApply { .. }) => "confirm-apply",
         Some(Overlay::ConfirmUndo(_)) => "confirm-undo",
         Some(Overlay::ConfirmUndoRow { .. }) => "confirm-undo-row",
         Some(Overlay::ConfirmRemove(_)) => "confirm-remove",
@@ -152,14 +151,8 @@ fn the_window_scans_plans_applies_and_undoes() {
     assert_eq!(harness.state().model.totals.candidates, 3);
     assert_eq!(harness.state().model.totals.files, 3);
 
-    // Apply, through the confirmation. The modal's own buttons are clicked via
-    // AccessKit: a pointer click at their rect is swallowed by the modal's
-    // backdrop, while the AccessKit Click action reaches the button.
+    // Apply, straight from the button: there is no confirmation to click.
     harness.get_by_label("Rename now").click();
-    harness.step();
-    assert!(matches!(harness.state().overlay, Some(Overlay::ConfirmApply { .. })));
-    pump_for_labels(&mut harness, "Apply", 1);
-    harness.get_by_label("Apply").click_accesskit();
     pump_until(&mut harness, "the run report", |app| {
         matches!(app.overlay, Some(Overlay::Report { .. }))
     });
@@ -427,8 +420,7 @@ fn a_pending_replan_waits_for_the_modal_to_close() {
 
     app.edits[0].value = "q-".to_owned();
     app.dirty_since = Some(Instant::now() - Duration::from_secs(1));
-    let totals = app.model.totals;
-    app.overlay = Some(Overlay::ConfirmApply { skipped: Vec::new(), totals });
+    app.overlay = Some(Overlay::ConfirmClear);
 
     harness.step();
     assert_eq!(harness.state().model.plan, before, "the modal freezes the plan");

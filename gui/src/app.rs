@@ -12,7 +12,6 @@ use egui::TextureHandle;
 use renameant_core::apply::{ApplyOptions, ApplyReport, Outcome};
 use renameant_core::filter::Filter;
 use renameant_core::journal::{self, RunId, Session};
-use renameant_core::plan::PlanRow;
 use renameant_core::rule::RuleSet;
 use renameant_core::scan::Scan;
 
@@ -47,12 +46,6 @@ const OVERLAY_WIDTH: f32 = 520.0;
 const FALLBACK_CONFIG: &str = "renameant-rules.json";
 
 enum Overlay {
-    /// The rows named in the confirmation, captured when it opened, so no
-    /// frame walks the whole plan.
-    ConfirmApply {
-        skipped: Vec<PlanRow>,
-        totals: crate::model::Totals,
-    },
     ConfirmUndo(Session),
     ConfirmUndoRow {
         run: RunId,
@@ -743,10 +736,7 @@ impl App {
                 .on_hover_text("Rename every matched row")
                 .clicked()
             {
-                self.overlay = Some(Overlay::ConfirmApply {
-                    skipped: self.model.skipped_rows(dialogs::SKIP_ROWS_SHOWN).cloned().collect(),
-                    totals: self.model.totals,
-                });
+                self.start_apply();
             }
             ui.label(format!("{} files / {} folders", totals.files, totals.folders));
         });
@@ -835,9 +825,6 @@ impl App {
         let modal = egui::Modal::new(egui::Id::unique("renameant-overlay")).show(ctx, |ui| {
             ui.set_min_width(OVERLAY_WIDTH);
             let choice = match &overlay {
-                Overlay::ConfirmApply { skipped, totals } => {
-                    dialogs::confirm_apply(ui, skipped, *totals, self.fast)
-                }
                 Overlay::ConfirmUndo(session) => dialogs::confirm_undo(ui, session),
                 Overlay::ConfirmUndoRow { run, from, to } => {
                     dialogs::confirm_undo_row(ui, *run, from, to)
@@ -854,10 +841,6 @@ impl App {
             };
             match choice {
                 Choice::None => {}
-                Choice::Apply => {
-                    keep = false;
-                    self.start_apply();
-                }
                 Choice::UndoRun(run) => {
                     keep = false;
                     self.start_undo(run);

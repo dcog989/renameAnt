@@ -11,7 +11,7 @@ use std::time::SystemTime;
 
 use renameant_core::filter::Filter;
 use renameant_core::osname;
-use renameant_core::plan::{self, Plan, PlanRow, Status};
+use renameant_core::plan::{self, Plan, Status};
 use renameant_core::rule::RuleSet;
 use renameant_core::scan::{DirIndex, Entry, Kind};
 
@@ -273,22 +273,13 @@ impl PlanModel {
         self.meta_loaded = true;
         self.rebuild_view();
     }
-
-    /// The rows that will never be applied, capped for display.
-    pub fn skipped_rows(&self, limit: usize) -> impl Iterator<Item = &PlanRow> {
-        self.plan
-            .rows
-            .iter()
-            .filter(|row| matches!(row.status, Status::Conflict(_) | Status::Invalid(_)))
-            .take(limit)
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
 
-    use renameant_core::plan::{ConflictKind, InvalidKind};
+    use renameant_core::plan::{ConflictKind, InvalidKind, PlanRow};
     use renameant_core::rule::{InsertRemoveOp, Rule, RuleSet, Target};
 
     use super::*;
