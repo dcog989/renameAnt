@@ -169,20 +169,14 @@ fn the_window_scans_plans_applies_and_undoes() {
     harness.get_by_label("Close").click_accesskit();
     pump_until(&mut harness, "the rescan after apply", |app| app.overlay.is_none() && !app.busy);
 
-    // Undo, through its confirmation: the journal's Undo, then the modal's. The
-    // two share a label, so pick the modal's by its place under the
-    // confirmation's heading; the journal's Undo is above the modal.
+    // Undo, through its confirmation: the journal's run button, then the
+    // modal's. The two have distinct accessible names, so no position lookup.
     assert_eq!(harness.state().sessions.len(), 1);
-    harness.get_by_label("Undo").click();
+    harness.get_by_label("undo run 1").click();
     harness.step();
     assert!(matches!(harness.state().overlay, Some(Overlay::ConfirmUndo(_))));
-    pump_for_labels(&mut harness, "Undo", 2);
-    let heading = harness.get_by_label("Undo run 1").rect();
-    harness
-        .get_all_by_label("Undo")
-        .find(|node| node.rect().top() > heading.bottom())
-        .expect("the confirmation's Undo button")
-        .click_accesskit();
+    pump_for_labels(&mut harness, "confirm undo run 1", 1);
+    harness.get_by_label("confirm undo run 1").click_accesskit();
     pump_until(&mut harness, "the undo report", |app| {
         matches!(app.overlay, Some(Overlay::Report { .. }))
     });

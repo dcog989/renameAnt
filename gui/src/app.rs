@@ -829,7 +829,11 @@ impl App {
                     dialogs::confirm_undo_row(ui, *run, from, to)
                 }
                 Overlay::ConfirmRemove(session) => dialogs::confirm_remove(ui, session),
-                Overlay::ConfirmClear => dialogs::confirm_clear(ui, self.sessions.len()),
+                Overlay::ConfirmClear => dialogs::confirm_clear(
+                    ui,
+                    self.sessions.len(),
+                    self.sessions.iter().filter(|session| session.interrupted).count(),
+                ),
                 Overlay::Report { title, report, listed, rest, counts } => {
                     dialogs::show_report(ui, title, report, *counts, listed, *rest)
                 }

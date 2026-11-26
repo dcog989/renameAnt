@@ -38,7 +38,14 @@ pub enum Action {
 /// long history.
 const MAX_CACHED_RUNS: usize = 8;
 
-type Reversed = HashMap<RunId, HashSet<(PathBuf, PathBuf)>>;
+/// The rows of one run that later undo runs reversed, and whether that is all
+/// of them.
+struct Reversal {
+    evidence: HashSet<(PathBuf, PathBuf)>,
+    all: bool,
+}
+
+type Reversed = HashMap<RunId, Reversal>;
 type ReversedKey = (usize, Option<RunId>);
 
 /// The runs the user opened, the renames each showed, and the list's order.
@@ -117,8 +124,19 @@ pub fn show(
         for session in order {
             let expanded = history.open.contains(&session.run);
             ui.horizontal(|ui| {
-                let enabled = session.renames > 0 && !busy;
-                if ui.add_enabled(enabled, egui::Button::new("Undo")).clicked() {
+                let all_reversed = reversed.get(&session.run).is_some_and(|reversal| reversal.all);
+                let enabled = session.renames > 0 && !busy && !all_reversed;
+                let response = ui
+                    .add_enabled(enabled, egui::Button::new("Undo"))
+                    .accessible_name(format!("undo run {}", session.run));
+                let response = if busy {
+                    response.on_disabled_hover_text("a run is in progress")
+                } else if all_reversed {
+                    response.on_disabled_hover_text("every row of this run was already reversed")
+                } else {
+                    response.on_hover_text("reverse every rename of this run")
+                };
+                if response.clicked() {
                     action = Some(Action::Undo(Undo::Run(session.clone())));
                 }
                 let toggle = ui
@@ -156,12 +174,8 @@ pub fn show(
                 });
             });
             let mut marks: Vec<String> = Vec::new();
-            if let Some(evidence) = reversed.get(&session.run)
-                && let Ok(rows) = rows(journal, history, session.run)
-            {
-                let all = !rows.is_empty()
-                    && rows.iter().all(|(from, to)| is_reversed(evidence, from, to));
-                marks.push(if all { "reversed" } else { "partly reversed" }.to_owned());
+            if let Some(reversal) = reversed.get(&session.run) {
+                marks.push(if reversal.all { "reversed" } else { "partly reversed" }.to_owned());
             }
             if let Some(undone) = session.undo_of
                 && runs.contains(&undone)
@@ -176,8 +190,14 @@ pub fn show(
                 ui.colored_label(warning(ui), marks.join(" · "));
             }
             if expanded
-                && let Some(row) =
-                    detail(ui, journal, history, session, reversed.get(&session.run), busy)
+                && let Some(row) = detail(
+                    ui,
+                    journal,
+                    history,
+                    session,
+                    reversed.get(&session.run).map(|reversal| &reversal.evidence),
+                    busy,
+                )
             {
                 action = Some(Action::Undo(row));
             }
@@ -187,20 +207,32 @@ pub fn show(
     action
 }
 
-/// The rows a later undo run reversed, per target run.
-fn reversed_rows(
-    sessions: &[Session],
-    journal: &Path,
-    history: &mut History,
-) -> HashMap<RunId, HashSet<(PathBuf, PathBuf)>> {
-    let mut reversed: HashMap<RunId, HashSet<(PathBuf, PathBuf)>> = HashMap::new();
+/// The rows a later undo run reversed, per target run. The target's rows are
+/// read here, once per session-list change, so the panel never re-reads them.
+fn reversed_rows(sessions: &[Session], journal: &Path, history: &mut History) -> Reversed {
+    let mut inverses: HashMap<RunId, HashSet<(PathBuf, PathBuf)>> = HashMap::new();
     for session in sessions {
         let Some(target) = session.undo_of else { continue };
-        let Ok(rows) = rows(journal, history, session.run) else { continue };
-        let evidence = reversed.entry(target).or_default();
-        for (from, to) in rows {
-            evidence.insert((to.clone(), from.clone()));
+        let Ok(renames) = rows(journal, history, session.run) else { continue };
+        // An undo that failed every row recorded nothing; it must not mark the
+        // target as reversed.
+        if renames.is_empty() {
+            continue;
         }
+        let inverse = inverses.entry(target).or_default();
+        for (from, to) in renames {
+            inverse.insert((to.clone(), from.clone()));
+        }
+    }
+
+    let mut reversed = Reversed::new();
+    for (target, evidence) in inverses {
+        let Ok(renames) = rows(journal, history, target) else { continue };
+        let matched = renames.iter().filter(|(from, to)| is_reversed(&evidence, from, to)).count();
+        if matched == 0 {
+            continue;
+        }
+        reversed.insert(target, Reversal { evidence, all: matched == renames.len() });
     }
     reversed
 }
@@ -342,8 +374,40 @@ mod tests {
         let mut history = History::default();
         let reversed = reversed_rows(&sessions, &path, &mut history);
 
-        let evidence = reversed.get(&1).expect("run 1 has an undo");
-        assert!(is_reversed(evidence, Path::new("/d/a"), Path::new("/d/p-a")));
-        assert!(!is_reversed(evidence, Path::new("/d/b"), Path::new("/d/p-b")));
+        let partial = reversed.get(&1).expect("run 1 has an undo");
+        assert!(is_reversed(&partial.evidence, Path::new("/d/a"), Path::new("/d/p-a")));
+        assert!(!is_reversed(&partial.evidence, Path::new("/d/b"), Path::new("/d/p-b")));
+        assert!(!partial.all);
+
+        // A second undo run reverses the other row, so the whole run is marked.
+        let mut journal = Journal::open(path.clone()).expect("open");
+        journal.append(&begin(3, Some(1))).expect("append");
+        journal.append(&rename(3, "/d/p-b", "/d/b")).expect("append");
+        journal.append(&end(3)).expect("append");
+        drop(journal);
+
+        let sessions = Journal::sessions(&path).expect("sessions");
+        let mut history = History::default();
+        let reversed = reversed_rows(&sessions, &path, &mut history);
+        assert!(reversed.get(&1).expect("run 1 has two undos").all);
+    }
+
+    #[test]
+    fn an_undo_that_reversed_nothing_marks_nothing() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = temp.path().join("journal.jsonl");
+        let mut journal = Journal::open(path.clone()).expect("open");
+        journal.append(&begin(1, None)).expect("append");
+        journal.append(&rename(1, "/d/a", "/d/p-a")).expect("append");
+        journal.append(&end(1)).expect("append");
+        journal.append(&begin(2, Some(1))).expect("append");
+        journal.append(&end(2)).expect("append");
+        drop(journal);
+
+        let sessions = Journal::sessions(&path).expect("sessions");
+        let mut history = History::default();
+        let reversed = reversed_rows(&sessions, &path, &mut history);
+
+        assert!(reversed.get(&1).is_none(), "nothing was reversed");
     }
 }

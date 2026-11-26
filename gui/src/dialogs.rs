@@ -63,7 +63,7 @@ pub fn confirm_apply(
             ui.label(format!("and {rest} more"));
         }
     }
-    buttons(ui, "Apply", Choice::Apply)
+    buttons(ui, "Apply", "Apply", Choice::Apply)
 }
 
 pub fn confirm_undo(ui: &mut Ui, session: &Session) -> Choice {
@@ -76,7 +76,7 @@ pub fn confirm_undo(ui: &mut Ui, session: &Session) -> Choice {
     if !note.is_empty() {
         ui.colored_label(warning(ui), note);
     }
-    buttons(ui, "Undo", Choice::UndoRun(run))
+    buttons(ui, "Undo", &format!("confirm undo run {run}"), Choice::UndoRun(run))
 }
 
 /// One row's undo: the inverse of a single rename, with the rest of the run left
@@ -86,26 +86,51 @@ pub fn confirm_undo_row(ui: &mut Ui, run: RunId, from: &Path, to: &Path) -> Choi
     ui.monospace(format!("{} → {}", format::file_text(to), format::file_text(from)))
         .on_hover_text(format!("{} → {}", to.display(), from.display()));
     ui.label("This reverses that one rename. Every other row of the run stays as it is.");
-    buttons(ui, "Undo", Choice::UndoRow { run, from: from.to_path_buf(), to: to.to_path_buf() })
+    buttons(
+        ui,
+        "Undo",
+        &format!("confirm undo one rename in run {run}"),
+        Choice::UndoRow { run, from: from.to_path_buf(), to: to.to_path_buf() },
+    )
 }
 
 /// Dropping one run from the journal: the files stay where the run put them.
 pub fn confirm_remove(ui: &mut Ui, session: &Session) -> Choice {
     let (run, renames) = (session.run, session.renames);
     ui.heading(format!("Remove run {run} from the journal"));
+    let verb = if renames == 1 { "is" } else { "are" };
+    let records = if renames == 1 { "record" } else { "records" };
     ui.label(format!(
-        "Its {renames} journal records are removed. The files stay as they are on disk, but this run can no longer be undone."
+        "Its {renames} rename {records} {verb} removed. The files stay as they are on disk, but this run can no longer be undone."
     ));
-    buttons(ui, "Remove", Choice::Remove(run))
+    let note = history::note(session);
+    if !note.is_empty() {
+        ui.colored_label(warning(ui), note);
+    }
+    if session.interrupted {
+        ui.colored_label(
+            danger(ui),
+            "This run stopped partway. A file can be left under a generated .renameant-tmp name, and these journal records are the only place its original name is kept. Removing them makes that file hard to identify.",
+        );
+    }
+    buttons(ui, "Remove", "Remove", Choice::Remove(run))
 }
 
 /// Emptying the journal: every run's undo goes, the files do not move.
-pub fn confirm_clear(ui: &mut Ui, runs: usize) -> Choice {
+pub fn confirm_clear(ui: &mut Ui, runs: usize, interrupted: usize) -> Choice {
     ui.heading("Clear the journal");
     ui.label(format!(
         "All {runs} runs are removed. Files stay as they are, and nothing in the journal can be undone afterward."
     ));
-    buttons(ui, "Clear all", Choice::ClearAll)
+    if interrupted > 0 {
+        ui.colored_label(
+            danger(ui),
+            format!(
+                "{interrupted} of these runs stopped partway. Their journal records are the only place a stranded .renameant-tmp file's original name is kept."
+            ),
+        );
+    }
+    buttons(ui, "Clear all", "confirm clear the journal", Choice::ClearAll)
 }
 
 pub fn show_report(
@@ -159,23 +184,37 @@ pub fn unlisted_rows(report: &ApplyReport) -> usize {
         .count()
 }
 
-/// The first rows a report will list, chosen once when it arrives, so no frame
-/// walks the whole run.
+/// The rows a report will list, chosen once when it arrives, so no frame walks
+/// the whole run. Failed rows come first: a long run must not hide its errors.
 pub fn listed_indices(report: &ApplyReport) -> Vec<usize> {
-    report
+    let mut listed: Vec<usize> = report
         .rows
         .iter()
         .enumerate()
-        .filter(|(_, row)| !matches!(row.outcome, Outcome::Skipped))
+        .filter(|(_, row)| matches!(row.outcome, Outcome::Failed(_)))
         .map(|(at, _)| at)
         .take(REPORT_ROWS_SHOWN)
-        .collect()
+        .collect();
+    if listed.len() < REPORT_ROWS_SHOWN {
+        listed.extend(
+            report
+                .rows
+                .iter()
+                .enumerate()
+                .filter(|(_, row)| {
+                    !matches!(row.outcome, Outcome::Skipped | Outcome::Failed(_))
+                })
+                .map(|(at, _)| at)
+                .take(REPORT_ROWS_SHOWN - listed.len()),
+        );
+    }
+    listed
 }
 
-fn buttons(ui: &mut Ui, accept: &str, choice: Choice) -> Choice {
+fn buttons(ui: &mut Ui, accept: &str, accept_name: &str, choice: Choice) -> Choice {
     let mut chosen = Choice::None;
     ui.horizontal(|ui| {
-        if ui.button(accept).clicked() {
+        if ui.button(accept).accessible_name(accept_name).clicked() {
             chosen = choice;
         }
         if ui.button("Cancel").clicked() {
@@ -183,4 +222,28 @@ fn buttons(ui: &mut Ui, accept: &str, choice: Choice) -> Choice {
         }
     });
     chosen
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use renameant_core::apply::{ApplyError, ApplyRow};
+
+    fn row(outcome: Outcome) -> ApplyRow {
+        ApplyRow { src: "/d/a".into(), dst: "/d/b".into(), outcome }
+    }
+
+    #[test]
+    fn a_report_lists_failures_before_the_limit_hides_them() {
+        let mut rows: Vec<ApplyRow> =
+            (0..REPORT_ROWS_SHOWN).map(|_| row(Outcome::Renamed)).collect();
+        rows.push(row(Outcome::Failed(ApplyError::PermissionDenied)));
+        let report = ApplyReport { run: 1, at: 0, records: rows.len(), rows, aborted: false };
+
+        let listed = listed_indices(&report);
+
+        assert_eq!(listed.len(), REPORT_ROWS_SHOWN);
+        assert_eq!(listed[0], REPORT_ROWS_SHOWN, "the failed row is listed first");
+        assert_eq!(unlisted_rows(&report), 1);
+    }
 }
