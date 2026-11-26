@@ -198,18 +198,15 @@ pub fn show(ui: &mut egui::Ui, model: &mut PlanModel) -> Change {
         }
     });
     // The frame and the line under the titles are painted outside the scroll
-    // area so they stay at the table's edges when the columns scroll. The rule
-    // sits in the middle of the header gap, where the first row's tint starts:
-    // the titles then take a whole row slot, like every other row.
+    // area so they stay at the table's edges when the columns scroll. The frame
+    // encloses the titles too. The rule sits in the middle of the header gap,
+    // where the first row's tint starts: the titles then take a whole row slot,
+    // like every other row.
     if let Some(header_bottom) = header_bottom {
-        let top = header_bottom + row_gap / 2.0;
-        let rect = egui::Rect::from_min_max(
-            egui::pos2(area.inner_rect.left(), top),
-            area.inner_rect.right_bottom(),
-        );
         let stroke = ui.visuals().widgets.noninteractive.bg_stroke;
+        let rect = area.inner_rect;
         ui.painter().rect_stroke(rect, egui::CornerRadius::ZERO, stroke, egui::StrokeKind::Inside);
-        ui.painter().hline(rect.x_range(), top, stroke);
+        ui.painter().hline(rect.x_range(), header_bottom + row_gap / 2.0, stroke);
     }
     Change { removed }
 }

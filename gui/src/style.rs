@@ -146,11 +146,7 @@ pub fn remove_chip(ui: &mut Ui) -> Response {
     // three chips makes any hover or click apply to all of them.
     let chip = ui.interact(rect, ui.unique_id().with("remove"), egui::Sense::click());
     if chip.hovered() {
-        ui.painter().rect_filled(
-            rect,
-            egui::CornerRadius::same(REMOVE_CHIP_CORNER),
-            REMOVE_HOVER,
-        );
+        ui.painter().rect_filled(rect, egui::CornerRadius::same(REMOVE_CHIP_CORNER), REMOVE_HOVER);
     }
     let color = if chip.hovered() {
         Color32::WHITE
