@@ -141,10 +141,7 @@ impl App {
                 // A later save writes only the rules this version knows. Keep
                 // the original file so a newer version's rule is not lost.
                 if !unsupported.is_empty() {
-                    log_warn!(
-                        "saved rules this version cannot read: {}",
-                        unsupported.join(", ")
-                    );
+                    log_warn!("saved rules this version cannot read: {}", unsupported.join(", "));
                     let backup = config_path.with_extension("json.bak");
                     if let Err(error) = std::fs::copy(&config_path, &backup) {
                         log_error!("the rules could not be backed up: {error}");

@@ -236,8 +236,11 @@ pub fn show(ui: &mut egui::Ui, model: &mut PlanModel) -> Change {
         let rect = egui::Rect::from_min_size(viewport.min, egui::vec2(width, height));
         // The rule stops at the frame's side lines, which are drawn over its
         // ends so it cannot poke out of the table.
-        ui.painter()
-            .hline(rect.x_range().shrink(stroke.width), header_bottom + row_gap / 2.0, stroke);
+        ui.painter().hline(
+            rect.x_range().shrink(stroke.width),
+            header_bottom + row_gap / 2.0,
+            stroke,
+        );
         ui.painter().rect_stroke(rect, egui::CornerRadius::ZERO, stroke, egui::StrokeKind::Inside);
     }
     Change { removed }
@@ -281,12 +284,8 @@ fn row_fill(
         (cell.top() - half)..=(cell.bottom() + half),
     )
     .round_ui();
-    let fill = Color32::from_rgba_unmultiplied(
-        hue.r(),
-        hue.g(),
-        hue.b(),
-        ROW_FILL_ALPHA[row_index % 2],
-    );
+    let fill =
+        Color32::from_rgba_unmultiplied(hue.r(), hue.g(), hue.b(), ROW_FILL_ALPHA[row_index % 2]);
     painter.rect_filled(rect, egui::CornerRadius::ZERO, fill);
 }
 
