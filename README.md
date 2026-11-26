@@ -56,6 +56,7 @@ Requires Rust 1.100+ and `rsvg-convert`.
 ```sh
 just check          # clippy, formatting check, tests
 just build          # target/release/renameant-gui
+just install        # release build into ~/.local (binary, menu entry, icon)
 just package        # AppImage into dist/out; prints its path
 just run            # Debug build and run of the GUI.
 just update         # Refresh dependencies to the latest allowed versions.

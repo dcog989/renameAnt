@@ -24,6 +24,12 @@ test:
 build:
     cargo build --release --locked
 
+# Install the release build for the current user: binary, desktop entry and icon.
+install: build
+    install -Dm755 target/release/renameant-gui "$HOME/.local/bin/renameant-gui"
+    install -Dm644 dist/renameant.desktop "$HOME/.local/share/applications/renameant.desktop"
+    rsvg-convert -w 256 -h 256 assets/logo.svg -o "$HOME/.local/share/icons/hicolor/256x256/apps/renameant.png"
+
 # Debug build and run of the GUI.
 run:
     cargo run -p renameant-gui
