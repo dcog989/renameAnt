@@ -788,32 +788,29 @@ impl App {
             .frame(style::panel_body(ui.style()))
             .show(ui, |ui| self.footer(ui));
         style::panel_body(ui.style()).show(ui, |ui| {
-            self.top_row(ui);
-            self.filter_row(ui);
-            self.notices(ui);
-            // The count reads as the table's own footer, so its line is reserved
-            // before the table takes the rest and the label lands under the
-            // table's frame, not on the panel's bottom edge.
-            let count_line =
-                ui.text_style_height(&egui::TextStyle::Body) + ui.spacing().item_spacing.y;
-            ui.scope(|ui| {
-                ui.set_max_height((ui.available_height() - count_line).max(0.0));
-                let change = table::show(ui, &mut self.model);
-                if let Some(path) = change.removed {
-                    // A path that came from the picked list leaves it too, so the
-                    // next scan does not bring the row back.
-                    self.added.retain(|added| added != &path);
-                    self.model.removed.insert(path);
-                    self.replan();
-                }
-            });
+            // The count reads as the table's own footer, so it is a panel of its
+            // own: the table takes the rest without this caller measuring a line.
             let (shown, scanned) = (self.model.plan.rows.len(), self.model.entries.len());
             let text = if self.model.filter.is_inactive() {
                 format!("{shown} entries")
             } else {
                 format!("{shown} of {scanned} entries")
             };
-            ui.label(egui::RichText::new(text).weak());
+            egui::Panel::bottom("renameant-count")
+                .frame(egui::Frame::new())
+                .show_separator_line(false)
+                .show(ui, |ui| ui.label(egui::RichText::new(text).weak()));
+            self.top_row(ui);
+            self.filter_row(ui);
+            self.notices(ui);
+            let change = table::show(ui, &mut self.model);
+            if let Some(path) = change.removed {
+                // A path that came from the picked list leaves it too, so the
+                // next scan does not bring the row back.
+                self.added.retain(|added| added != &path);
+                self.model.removed.insert(path);
+                self.replan();
+            }
         });
     }
 
