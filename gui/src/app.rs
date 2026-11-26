@@ -37,8 +37,6 @@ const FILTER_FIELD_WIDTH: f32 = 340.0;
 /// Control height on the sources toolbar: taller than the rest, so the row the
 /// user starts from reads as the first thing on the panel.
 const TOP_ROW_HEIGHT: f32 = 32.0;
-/// The primary action, deliberately larger than every other button.
-const ACTION_TEXT_SIZE: f32 = 20.0;
 /// The narrowest a modal gets, so a short report does not squeeze its text into
 /// a column.
 const OVERLAY_WIDTH: f32 = 520.0;
@@ -732,7 +730,9 @@ impl App {
             if ui
                 .add_enabled(
                     ready,
-                    egui::Button::new(egui::RichText::new("✏ Rename now").size(ACTION_TEXT_SIZE)),
+                    egui::Button::new(
+                        egui::RichText::new("✏ Rename now").size(style::ACTION_TEXT_SIZE),
+                    ),
                 )
                 .accessible_name("Rename now")
                 .on_hover_text("Rename every matched row")

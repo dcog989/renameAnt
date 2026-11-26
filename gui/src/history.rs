@@ -168,16 +168,10 @@ pub fn show(
                     if busy {
                         ui.disable();
                     }
-                    let chip = style::remove_chip(ui)
-                        .on_hover_text("Delete this run from the journal")
-                        .on_disabled_hover_text("A run is in progress");
-                    chip.widget_info(|| {
-                        egui::WidgetInfo::labeled(
-                            egui::Role::Button,
-                            ui.is_enabled(),
-                            format!("remove run {} from the journal", session.run),
-                        )
-                    });
+                    let chip =
+                        style::remove(ui, &format!("remove run {} from the journal", session.run))
+                            .on_hover_text("Delete this run from the journal")
+                            .on_disabled_hover_text("A run is in progress");
                     if chip.clicked() {
                         action = Some(Action::Remove(session.clone()));
                     }

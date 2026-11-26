@@ -116,22 +116,19 @@ pub fn show(ui: &mut egui::Ui, model: &mut PlanModel) -> Change {
                 let plan_index = model.view[at];
                 let entry = &model.plan.rows[plan_index];
                 row.col(|ui| {
-                    row_fill(&painter, ui, entry.status, at);
-                    cell(ui, |ui| {
+                    row_cell(ui, &painter, entry.status, at, |ui| {
                         let label = format::status_label(entry.status);
                         ui.colored_label(status_color(ui, entry.status), label)
                             .on_hover_text(label);
                     });
                 });
                 row.col(|ui| {
-                    row_fill(&painter, ui, entry.status, at);
-                    cell(ui, |ui| {
+                    row_cell(ui, &painter, entry.status, at, |ui| {
                         ui.add(egui::Label::new(path_text(ui, &entry.src)).truncate());
                     });
                 });
                 row.col(|ui| {
-                    row_fill(&painter, ui, entry.status, at);
-                    cell(ui, |ui| {
+                    row_cell(ui, &painter, entry.status, at, |ui| {
                         let name = egui::RichText::new(format::file_text(&entry.dst)).strong();
                         ui.add(egui::Label::new(name).truncate());
                     });
@@ -143,16 +140,14 @@ pub fn show(ui: &mut egui::Ui, model: &mut PlanModel) -> Change {
                     .and_then(|meta| meta.mtime)
                     .map_or_else(String::new, |mtime| format::local_text(unix_seconds(mtime)));
                 row.col(|ui| {
-                    row_fill(&painter, ui, entry.status, at);
-                    cell(ui, |ui| {
+                    row_cell(ui, &painter, entry.status, at, |ui| {
                         right(ui, |ui| {
                             ui.label(size);
                         });
                     });
                 });
                 row.col(|ui| {
-                    row_fill(&painter, ui, entry.status, at);
-                    cell(ui, |ui| {
+                    row_cell(ui, &painter, entry.status, at, |ui| {
                         let width = text_width(ui, &modified);
                         center(ui, width, |ui| {
                             // Extend, not wrap: wrapping inside the auto-sized
@@ -163,19 +158,14 @@ pub fn show(ui: &mut egui::Ui, model: &mut PlanModel) -> Change {
                 });
                 let removed_here = entry.src.clone();
                 row.col(|ui| {
-                    row_fill(&painter, ui, entry.status, at);
-                    cell(ui, |ui| {
+                    row_cell(ui, &painter, entry.status, at, |ui| {
                         center(ui, style::REMOVE_CHIP, |ui| {
                             // The row's one action, focusable and announced.
-                            let chip = style::remove_chip(ui)
-                                .on_hover_text("Remove this row from the list");
-                            chip.widget_info(|| {
-                                egui::WidgetInfo::labeled(
-                                    egui::Role::Button,
-                                    ui.is_enabled(),
-                                    format!("remove {}", format::file_text(&removed_here)),
-                                )
-                            });
+                            let chip = style::remove(
+                                ui,
+                                &format!("remove {}", format::file_text(&removed_here)),
+                            )
+                            .on_hover_text("Remove this row from the list");
                             if chip.clicked() {
                                 removed = Some(removed_here.clone());
                             }
@@ -220,6 +210,18 @@ fn path_text(ui: &egui::Ui, path: &Path) -> egui::text::LayoutJob {
     job.append(&dir, 0.0, styled(ui.visuals().text_color()));
     job.append(&name, 0.0, styled(ui.visuals().strong_text_color()));
     job
+}
+
+/// One body cell: its row's status tint first, then its content.
+fn row_cell<R>(
+    ui: &mut egui::Ui,
+    painter: &egui::Painter,
+    status: Status,
+    row_index: usize,
+    content: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    row_fill(painter, ui, status, row_index);
+    cell(ui, content)
 }
 
 /// Paints a row's status tint on one of its cells, with the table body's painter

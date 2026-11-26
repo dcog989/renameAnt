@@ -25,6 +25,13 @@ const MENU_MARGIN: i8 = 8;
 pub const CELL_PADDING: i8 = 6;
 /// Space inside a panel title bar, around its title.
 const HEADER_PADDING: Margin = Margin::symmetric(12, 8);
+/// The rule card's icon and title sizes.
+pub const RULE_ICON_SIZE: f32 = 30.0;
+pub const RULE_TITLE_SIZE: f32 = 16.0;
+/// The primary action's text, deliberately larger than every other button.
+pub const ACTION_TEXT_SIZE: f32 = 20.0;
+/// Border width of every rule card, on or off, so toggling cannot resize it.
+const CARD_BORDER_WIDTH: f32 = 1.5;
 /// The window's accent: orange (#d87129). Selection, links and the panel title
 /// bars are all tinted from it.
 pub const ACCENT: Color32 = Color32::from_rgb(216, 113, 41);
@@ -108,10 +115,44 @@ pub fn group_frame(style: &Style) -> Frame {
     Frame::group(style).inner_margin(style.spacing.window_margin)
 }
 
+/// A rule card: an accent border when the rule is on, the plain group border
+/// when it is off.
+pub fn card_frame(ui: &Ui, enabled: bool) -> Frame {
+    let frame = group_frame(ui.style());
+    let color = if enabled { ACCENT_BRIGHT } else { frame.stroke.color };
+    frame.stroke(Stroke::new(CARD_BORDER_WIDTH, color))
+}
+
+/// A rule card's icon and title: accent when the rule is on, weak when it is off.
+pub fn card_text(ui: &Ui, enabled: bool) -> Color32 {
+    if enabled { ACCENT_BRIGHT } else { ui.visuals().weak_text_color() }
+}
+
 /// A text field: monospace, so every field reads as one and no call site
 /// styles its own.
 pub fn field(ui: &mut Ui, text: &mut String, width: f32) -> Response {
     ui.add(TextEdit::singleline(text).desired_width(width).font(TextStyle::Monospace))
+}
+
+/// A dropdown: one shape for every combo in the window, with the pointer cursor
+/// the combo itself does not set.
+pub fn combo<T: Copy + PartialEq>(
+    ui: &mut Ui,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    value: &mut T,
+    all: impl IntoIterator<Item = T>,
+    label: impl Fn(T) -> &'static str,
+) -> Response {
+    let selected = label(*value);
+    let response = egui::ComboBox::from_id_salt(id)
+        .selected_text(selected)
+        .show_ui(ui, |ui| {
+            for option in all {
+                ui.selectable_value(value, option, label(option));
+            }
+        })
+        .response;
+    pointer(response)
 }
 
 /// A menu's contents. egui's own menu style flattens the button padding to
@@ -136,9 +177,10 @@ pub const REMOVE_CHIP: f32 = 18.0;
 /// Rounding on the chip, close to the theme's button radius.
 const REMOVE_CHIP_CORNER: u8 = 4;
 
-/// A square remove chip: the same target and look in the table and the journal.
-/// The caller supplies the hover text and the accessible name.
-pub fn remove_chip(ui: &mut Ui) -> Response {
+/// A square remove chip: the same target and look in the table, the journal and
+/// the rule editor. `name` is what a screen reader announces; the caller
+/// supplies the hover text.
+pub fn remove(ui: &mut Ui, name: &str) -> Response {
     let (_, rect) = ui.allocate_space(Vec2::splat(REMOVE_CHIP));
     // A real widget, not painted text, so the action can be focused and clicked
     // from the keyboard. A disabled `ui` also disables the click. The unique id,
@@ -162,7 +204,8 @@ pub fn remove_chip(ui: &mut Ui) -> Response {
         TextStyle::Body.resolve(ui.style()),
         color,
     );
-    chip.on_hover_cursor(CursorIcon::PointingHand)
+    chip.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), name));
+    pointer(chip)
 }
 
 /// A panel's full-bleed title bar: a faint neutral fill across the panel width,

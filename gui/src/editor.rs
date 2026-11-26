@@ -3,7 +3,7 @@
 //!
 //! The edit shape lives in [`crate::edit`]; this is its widgets.
 
-use egui::{Color32, DragValue, Frame, RichText, Stroke, Ui};
+use egui::{DragValue, RichText, Ui};
 
 use renameant_core::rule::Target;
 
@@ -17,16 +17,10 @@ const ADD_MENU_HEIGHT: f32 = 34.0;
 /// Never shrink the list below this, however short the panel is.
 const MIN_LIST_HEIGHT: f32 = 120.0;
 const FIELD_WIDTH: f32 = 120.0;
-/// Vertical gap between the lines of one wrapped field row.
-const ICON_SIZE: f32 = 30.0;
-/// Border width of every rule's card, on or off, so toggling cannot resize it.
-const CARD_BORDER_WIDTH: f32 = 1.5;
 /// Upper bounds keep a drag from producing a name that cannot exist anyway.
 const MAX_COUNT: u64 = 10_000;
 const MAX_STEP: u64 = 1_000_000;
 const MAX_PAD: u64 = 32;
-/// An off rule is dimmed, not hidden: it keeps its place and its order.
-const OFF: Color32 = Color32::from_gray(110);
 
 /// One glyph per rule type, all present in the bundled fonts, so no icon font is
 /// needed.
@@ -62,7 +56,7 @@ pub fn show(ui: &mut Ui, edits: &mut Vec<RuleEdit>) {
                 );
             }
             for (index, edit) in edits.iter_mut().enumerate() {
-                card_frame(ui, edit.enabled).show(ui, |ui| {
+                crate::style::card_frame(ui, edit.enabled).show(ui, |ui| {
                     card(ui, index, count, edit, &mut remove, &mut move_to);
                 });
             }
@@ -78,16 +72,6 @@ pub fn show(ui: &mut Ui, edits: &mut Vec<RuleEdit>) {
     add_menu(ui, edits);
 }
 
-/// The card frame: an accent border when the rule is on, the plain group border
-/// when it is off.
-fn card_frame(ui: &Ui, enabled: bool) -> Frame {
-    let frame = crate::style::group_frame(ui.style());
-    // The stroke width is part of the frame's margin, so both states keep it and
-    // only the colour changes; otherwise toggling shifts every card below.
-    let color = if enabled { crate::style::ACCENT_BRIGHT } else { frame.stroke.color };
-    frame.stroke(Stroke::new(CARD_BORDER_WIDTH, color))
-}
-
 fn card(
     ui: &mut Ui,
     index: usize,
@@ -99,7 +83,7 @@ fn card(
     // The frame sizes to its content, so pin the content to the column width to
     // make the card fill it.
     ui.set_min_width(ui.available_width());
-    let color = if edit.enabled { crate::style::ACCENT_BRIGHT } else { OFF };
+    let color = crate::style::card_text(ui, edit.enabled);
     // The parts are one toggle, so they read hover from the block's last rect
     // rather than each from its own, and all change on the same frame.
     let block_id = ui.scope_id().with(("toggle block", index));
@@ -111,8 +95,12 @@ fn card(
         let hot_color = if hot { crate::style::ACCENT_LIGHT } else { color };
         let toggle = ui
             .add(
-                egui::Button::new(RichText::new(icon(edit.kind)).size(ICON_SIZE).color(hot_color))
-                    .frame(false),
+                egui::Button::new(
+                    RichText::new(icon(edit.kind))
+                        .size(crate::style::RULE_ICON_SIZE)
+                        .color(hot_color),
+                )
+                .frame(false),
             )
             .accessible_name(name(index, "on or off"));
         if toggle.clicked() {
@@ -120,7 +108,11 @@ fn card(
         }
         let title = crate::style::pointer(
             ui.add(
-                egui::Label::new(RichText::new(edit.kind.label()).color(hot_color).size(16.0))
+                egui::Label::new(
+                    RichText::new(edit.kind.label())
+                        .color(hot_color)
+                        .size(crate::style::RULE_TITLE_SIZE),
+                )
                     .wrap_mode(egui::TextWrapMode::Extend)
                     .sense(egui::Sense::click()),
             ),
@@ -146,10 +138,8 @@ fn card(
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if !edit.builtin
-                && ui
-                    .add(egui::Button::new(RichText::new("×").size(20.0)).frame(false))
+                && crate::style::remove(ui, &name(index, "Remove"))
                     .on_hover_text("Remove this rule")
-                    .accessible_name(name(index, "Remove"))
                     .clicked()
             {
                 *remove = Some(index);
@@ -257,15 +247,12 @@ fn fields(ui: &mut Ui, index: usize, edit: &mut RuleEdit) {
                     label(ui, "characters from the end");
                 }
                 RuleKind::Insert => {
-                    crate::style::pointer(
-                        egui::ComboBox::from_id_salt(("insert", index))
-                            .selected_text(edit.insert.label())
-                            .show_ui(ui, |ui| {
-                                for op in InsertKind::ALL {
-                                    ui.selectable_value(&mut edit.insert, op, op.label());
-                                }
-                            })
-                            .response,
+                    crate::style::combo(
+                        ui,
+                        ("insert", index),
+                        &mut edit.insert,
+                        InsertKind::ALL,
+                        InsertKind::label,
                     )
                     .accessible_name(name(index, "where"));
                     crate::style::field(ui, &mut edit.value, FIELD_WIDTH)
@@ -289,32 +276,22 @@ fn fields(ui: &mut Ui, index: usize, edit: &mut RuleEdit) {
                 }
                 RuleKind::Date => {
                     place_combo(ui, index, edit);
-                    crate::style::pointer(
-                        egui::ComboBox::from_id_salt(("date format", index))
-                            .selected_text(date_format_label(edit.date_format))
-                            .show_ui(ui, |ui| {
-                                for format in DATE_FORMATS {
-                                    ui.selectable_value(
-                                        &mut edit.date_format,
-                                        format,
-                                        date_format_label(format),
-                                    );
-                                }
-                            })
-                            .response,
+                    crate::style::combo(
+                        ui,
+                        ("date format", index),
+                        &mut edit.date_format,
+                        DATE_FORMATS,
+                        date_format_label,
                     )
                     .accessible_name(name(index, "format"));
                 }
                 RuleKind::Case => {
-                    crate::style::pointer(
-                        egui::ComboBox::from_id_salt(("case", index))
-                            .selected_text(case_label(edit.case))
-                            .show_ui(ui, |ui| {
-                                for style in CASE_STYLES {
-                                    ui.selectable_value(&mut edit.case, style, case_label(style));
-                                }
-                            })
-                            .response,
+                    crate::style::combo(
+                        ui,
+                        ("case", index),
+                        &mut edit.case,
+                        CASE_STYLES,
+                        case_label,
                     )
                     .accessible_name(name(index, "style"));
                 }
@@ -331,29 +308,17 @@ fn fields(ui: &mut Ui, index: usize, edit: &mut RuleEdit) {
 
 /// The where-combo shared by every rule that generates text.
 fn place_combo(ui: &mut Ui, index: usize, edit: &mut RuleEdit) {
-    crate::style::pointer(
-        egui::ComboBox::from_id_salt(("place", index))
-            .selected_text(edit.place.label())
-            .show_ui(ui, |ui| {
-                for place in Place::ALL {
-                    ui.selectable_value(&mut edit.place, place, place.label());
-                }
-            })
-            .response,
-    )
-    .accessible_name(name(index, "where"));
+    crate::style::combo(ui, ("place", index), &mut edit.place, Place::ALL, Place::label)
+        .accessible_name(name(index, "where"));
 }
 
 fn target_combo(ui: &mut Ui, index: usize, edit: &mut RuleEdit) {
-    crate::style::pointer(
-        egui::ComboBox::from_id_salt(("target", index))
-            .selected_text(target_label(edit.target))
-            .show_ui(ui, |ui| {
-                for target in [Target::Stem, Target::Ext, Target::Whole] {
-                    ui.selectable_value(&mut edit.target, target, target_label(target));
-                }
-            })
-            .response,
+    crate::style::combo(
+        ui,
+        ("target", index),
+        &mut edit.target,
+        [Target::Stem, Target::Ext, Target::Whole],
+        target_label,
     )
     .accessible_name(name(index, "target"));
 }
