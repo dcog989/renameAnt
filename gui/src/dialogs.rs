@@ -10,10 +10,10 @@ use renameant_core::apply::{ApplyReport, Outcome};
 use renameant_core::journal::{RunId, Session};
 use renameant_core::plan::PlanRow;
 
-use crate::app::{danger, warning};
 use crate::format;
 use crate::history;
 use crate::model::Totals;
+use crate::style::{danger, warning};
 
 /// Skipped rows named in the confirmation before it says "and N more".
 pub(crate) const SKIP_ROWS_SHOWN: usize = 20;

@@ -42,6 +42,42 @@ const HEADER_LINE_COLOR: Color32 = Color32::from_rgba_unmultiplied_const(48, 127
 /// Width of the line under a title bar.
 const HEADER_LINE_WIDTH: f32 = 1.0;
 
+/// Status colours for the dark theme: light enough for a near-black window.
+const OK_DARK: Color32 = Color32::from_rgb(150, 224, 160);
+const WARNING_DARK: Color32 = Color32::from_rgb(255, 205, 120);
+const DANGER_DARK: Color32 = Color32::from_rgb(255, 185, 175);
+/// The same meanings on a light window, darkened for APCA text contrast.
+const OK_LIGHT: Color32 = Color32::from_rgb(27, 94, 32);
+const WARNING_LIGHT: Color32 = Color32::from_rgb(122, 74, 0);
+const DANGER_LIGHT: Color32 = Color32::from_rgb(164, 34, 26);
+/// "no match" is still a status the user reads, so it gets a theme pair too.
+const UNCHANGED_DARK: Color32 = Color32::from_rgb(192, 192, 192);
+const UNCHANGED_LIGHT: Color32 = Color32::from_rgb(95, 99, 104);
+/// Selected text and a focused field's outline, per theme. Light on the dark
+/// accent, dark on the light one, so both keep APCA contrast.
+const SELECTED_TEXT_DARK: Color32 = Color32::from_rgb(216, 243, 245);
+const SELECTED_TEXT_LIGHT: Color32 = Color32::from_rgb(18, 58, 63);
+
+fn themed(ui: &Ui, light: Color32, dark: Color32) -> Color32 {
+    if ui.visuals().dark_mode { dark } else { light }
+}
+
+pub(crate) fn ok(ui: &Ui) -> Color32 {
+    themed(ui, OK_LIGHT, OK_DARK)
+}
+
+pub(crate) fn warning(ui: &Ui) -> Color32 {
+    themed(ui, WARNING_LIGHT, WARNING_DARK)
+}
+
+pub(crate) fn danger(ui: &Ui) -> Color32 {
+    themed(ui, DANGER_LIGHT, DANGER_DARK)
+}
+
+pub(crate) fn unchanged(ui: &Ui) -> Color32 {
+    themed(ui, UNCHANGED_LIGHT, UNCHANGED_DARK)
+}
+
 /// Width of the outline on a hovered widget.
 const HOVER_OUTLINE_WIDTH: f32 = 1.0;
 /// Width of a hovered widget's own stroke: its text or drag handle.
@@ -55,9 +91,12 @@ pub fn apply(ctx: &Context) {
         style.spacing.interact_size = INTERACT_SIZE;
         style.spacing.window_margin = Margin::same(MARGIN);
         style.spacing.menu_margin = Margin::same(MENU_MARGIN);
-        style.visuals.selection.bg_fill = ACCENT;
-        style.visuals.selection.stroke = Stroke::new(FOCUS_WIDTH, ACCENT_LIGHT);
-        style.visuals.hyperlink_color = ACCENT;
+        style.visuals.selection.bg_fill =
+            if style.visuals.dark_mode { ACCENT } else { ACCENT_LIGHT };
+        style.visuals.selection.stroke = Stroke::new(
+            FOCUS_WIDTH,
+            if style.visuals.dark_mode { SELECTED_TEXT_DARK } else { SELECTED_TEXT_LIGHT },
+        );
         // A pressed widget fills with the accent; a hovered one takes an accent
         // outline and, for text and drag handles, an accent stroke.
         style.visuals.widgets.active.weak_bg_fill = ACCENT;
@@ -67,12 +106,6 @@ pub fn apply(ctx: &Context) {
         // Every button reads this, so a clickable control reads as one.
         style.visuals.interact_cursor = Some(CursorIcon::PointingHand);
     });
-}
-
-/// The frame for a panel: no margin, so a title bar reaches the panel's top and
-/// side edges. It has no fill, so the window's opaque clear colour shows through.
-pub fn panel_frame() -> Frame {
-    Frame::new()
 }
 
 /// The frame for everything below a panel's title bar, padded like a window.

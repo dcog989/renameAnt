@@ -22,14 +22,21 @@ pub fn status_label(status: Status) -> &'static str {
     }
 }
 
+/// Sort order for the Status column: problems first, matches last, so the view
+/// groups by meaning instead of by label text.
+pub fn status_rank(status: Status) -> u8 {
+    match status {
+        Status::Invalid(_) => 0,
+        Status::Conflict(_) => 1,
+        Status::Ok => 2,
+        Status::Unchanged => 3,
+    }
+}
+
 /// A name as text. Non-UTF-8 names are shown lossily and flagged; they are
 /// never converted on disk.
 pub fn name_text(name: &[u8]) -> String {
     String::from_utf8_lossy(name).into_owned()
-}
-
-pub fn is_utf8(name: &[u8]) -> bool {
-    std::str::from_utf8(name).is_ok()
 }
 
 pub fn file_bytes(path: &Path) -> &[u8] {
@@ -44,17 +51,28 @@ pub fn file_text(path: &Path) -> String {
 /// itself, so the name can be shown stronger than the folders above it.
 pub fn path_parts(path: &Path) -> (String, String) {
     let bytes = path.as_os_str().as_bytes();
-    let name_at = bytes.len() - file_bytes(path).len();
-    (name_text(&bytes[..name_at]), name_text(&bytes[name_at..]))
+    // file_name() ignores a trailing separator, so find the name from the end
+    // rather than trusting the path's byte length.
+    let end = bytes.iter().rposition(|byte| *byte != b'/').map_or(0, |at| at + 1);
+    if end == 0 {
+        return (String::new(), name_text(bytes));
+    }
+    let start = bytes[..end].iter().rposition(|byte| *byte == b'/').map_or(0, |at| at + 1);
+    (name_text(&bytes[..start]), name_text(&bytes[start..end]))
 }
 
 /// A byte count for the preview's Size column.
 pub fn size_text(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "K", "M", "G", "T"];
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
     const STEP: f64 = 1024.0;
     let mut value = bytes as f64;
     let mut unit = 0;
     while value >= STEP && unit < UNITS.len() - 1 {
+        value /= STEP;
+        unit += 1;
+    }
+    // One decimal can round 1023.95 KiB up to "1024.0", so carry it.
+    if value >= STEP - 0.05 && unit < UNITS.len() - 1 {
         value /= STEP;
         unit += 1;
     }
@@ -88,8 +106,10 @@ mod tests {
     #[test]
     fn sizes_read_in_plain_units() {
         assert_eq!(size_text(999), "999 B");
-        assert_eq!(size_text(1024), "1.0 K");
-        assert_eq!(size_text(1536), "1.5 K");
+        assert_eq!(size_text(1024), "1.0 KiB");
+        assert_eq!(size_text(1536), "1.5 KiB");
+        // One decimal would print "1024.0 KiB" without the carry.
+        assert_eq!(size_text(1_048_525), "1.0 MiB");
     }
 
     #[test]
@@ -115,5 +135,8 @@ mod tests {
         );
         // A name directly below the root keeps exactly one separator.
         assert_eq!(path_parts(Path::new("/a.txt")), ("/".to_owned(), "a.txt".to_owned()));
+        // A trailing separator is not part of the name.
+        assert_eq!(path_parts(Path::new("/d/sub/")), ("/d/".to_owned(), "sub".to_owned()));
+        assert_eq!(path_parts(Path::new("/")), (String::new(), "/".to_owned()));
     }
 }

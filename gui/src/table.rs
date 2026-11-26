@@ -11,7 +11,6 @@ use egui_extras::{Column, TableBuilder};
 
 use renameant_core::plan::Status;
 
-use crate::app::{danger, ok, warning};
 use crate::format;
 use crate::model::{PlanModel, Sort, SortKey};
 use crate::style;
@@ -71,11 +70,11 @@ pub fn show(ui: &mut egui::Ui, model: &mut PlanModel) -> Change {
         let table = TableBuilder::new(ui)
             .striped(true)
             .resizable(true)
-            // Cells sense clicks so a row's context menu can open; the widgets
-            // inside a cell are hit-tested first, so the `X` still works.
-            .sense(egui::Sense::click())
+            // Cells sense clicks so a row's context menu can open; they are not
+            // keyboard focus stops, because the Remove chip is the row's action.
+            .sense(egui::Sense::CLICK)
             .cell_layout(Layout::left_to_right(Align::Center))
-            .column(Column::exact(STATUS_WIDTH).resizable(false))
+            .column(Column::exact(STATUS_WIDTH).resizable(false).clip(true))
             .column(Column::initial(PATH_WIDTH).at_least(NAME_MIN_WIDTH).clip(true))
             .column(Column::initial(NAME_WIDTH).at_least(NAME_MIN_WIDTH).clip(true))
             .column(Column::initial(SIZE_WIDTH).at_least(SIZE_MIN_WIDTH).clip(true))
@@ -127,10 +126,9 @@ pub fn show(ui: &mut egui::Ui, model: &mut PlanModel) -> Change {
                 row.col(|ui| {
                     row_fill(&painter, ui, entry.status, at);
                     cell(ui, |ui| {
-                        ui.colored_label(
-                            status_color(ui, entry.status),
-                            format::status_label(entry.status),
-                        );
+                        let label = format::status_label(entry.status);
+                        ui.colored_label(status_color(ui, entry.status), label)
+                            .on_hover_text(label);
                     });
                 });
                 row.col(|ui| {
@@ -172,27 +170,34 @@ pub fn show(ui: &mut egui::Ui, model: &mut PlanModel) -> Change {
                     });
                 });
                 let removed_here = entry.src.clone();
-                let mut remove_rect: Option<egui::Rect> = None;
                 row.col(|ui| {
                     row_fill(&painter, ui, entry.status, at);
                     cell(ui, |ui| {
                         center(ui, REMOVE_CHIP, |ui| {
-                            // A painted chip, not an interactive widget: a
-                            // widget here would take the hover from the row and
-                            // drop its highlight. The row's click is hit-tested
-                            // against this rect instead.
                             let (_, rect) = ui.allocate_space(egui::Vec2::splat(REMOVE_CHIP));
-                            remove_rect = Some(rect);
-                            let hovered = ui.rect_contains_pointer(rect);
-                            if hovered {
+                            // A real widget (not painted text) so the row's one
+                            // action can be focused, announced and clicked from
+                            // the keyboard.
+                            let chip = ui
+                                .interact(
+                                    rect,
+                                    ui.id().with("remove-row"),
+                                    egui::Sense::click(),
+                                )
+                                .on_hover_text("remove this row from the list")
+                                .on_hover_cursor(egui::CursorIcon::PointingHand);
+                            if chip.hovered() {
                                 ui.painter().rect_filled(
                                     rect,
                                     egui::CornerRadius::same(REMOVE_CHIP_CORNER),
                                     REMOVE_HOVER,
                                 );
                             }
-                            let color =
-                                if hovered { Color32::WHITE } else { ui.visuals().text_color() };
+                            let color = if chip.hovered() {
+                                Color32::WHITE
+                            } else {
+                                ui.visuals().text_color()
+                            };
                             ui.painter().text(
                                 rect.center(),
                                 egui::Align2::CENTER_CENTER,
@@ -200,23 +205,20 @@ pub fn show(ui: &mut egui::Ui, model: &mut PlanModel) -> Change {
                                 egui::TextStyle::Body.resolve(ui.style()),
                                 color,
                             );
+                            chip.widget_info(|| {
+                                egui::WidgetInfo::labeled(
+                                    egui::Role::Button,
+                                    ui.is_enabled(),
+                                    format!("remove {}", format::file_text(&removed_here)),
+                                )
+                            });
+                            if chip.clicked() {
+                                removed = Some(removed_here.clone());
+                            }
                         });
                     });
                 });
-                let mut response = row.response();
-                if let Some(rect) = remove_rect {
-                    if response.hover_pos().is_some_and(|pos| rect.contains(pos)) {
-                        response = response
-                            .on_hover_text("remove this row from the list")
-                            .on_hover_cursor(egui::CursorIcon::PointingHand);
-                    }
-                    if response.clicked()
-                        && response.interact_pointer_pos().is_some_and(|pos| rect.contains(pos))
-                    {
-                        removed = Some(removed_here.clone());
-                    }
-                }
-                response.context_menu(|ui| {
+                row.response().context_menu(|ui| {
                     if ui.button("Remove").clicked() {
                         removed = Some(removed_here.clone());
                         ui.close();
@@ -432,9 +434,9 @@ fn paint_direction(ui: &egui::Ui, rect: egui::Rect, descending: bool) {
 
 fn status_color(ui: &egui::Ui, status: Status) -> Color32 {
     match status {
-        Status::Ok => ok(ui),
-        Status::Unchanged => Color32::GRAY,
-        Status::Conflict(_) => warning(ui),
-        Status::Invalid(_) => danger(ui),
+        Status::Ok => style::ok(ui),
+        Status::Unchanged => style::unchanged(ui),
+        Status::Conflict(_) => style::warning(ui),
+        Status::Invalid(_) => style::danger(ui),
     }
 }

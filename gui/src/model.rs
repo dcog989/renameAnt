@@ -15,7 +15,7 @@ use renameant_core::plan::{self, Plan, PlanRow, Status};
 use renameant_core::rule::RuleSet;
 use renameant_core::scan::{DirIndex, Entry, Kind};
 
-use crate::format::{self, is_utf8};
+use crate::format;
 
 /// Missing metadata, or a size that says nothing (a directory's), sorts last,
 /// never first.
@@ -30,6 +30,13 @@ fn time_key(meta: Option<&FileMeta>) -> (bool, Option<SystemTime>) {
 /// The whole path's bytes, for the orders that compare full paths.
 fn path_bytes(path: &Path) -> &[u8] {
     path.as_os_str().as_bytes()
+}
+
+/// A missing value sorts last in both directions; `desc` flips only the values.
+fn compare_meta<T: Ord>(left: (bool, T), right: (bool, T), desc: bool) -> std::cmp::Ordering {
+    left.0.cmp(&right.0).then_with(|| {
+        if desc { right.1.cmp(&left.1) } else { left.1.cmp(&right.1) }
+    })
 }
 
 /// Which order the table shows the rows in. The plan itself is never reordered;
@@ -119,8 +126,10 @@ impl PlanModel {
         // the same tree and is dropped once the path is gone.
         let present: HashSet<&Path> = entries.iter().map(|entry| entry.path.as_path()).collect();
         self.removed.retain(|path| present.contains(path.as_path()));
-        self.not_utf8 =
-            entries.iter().filter(|entry| !is_utf8(entry.name.as_os_str().as_bytes())).count();
+        self.not_utf8 = entries
+            .iter()
+            .filter(|entry| std::str::from_utf8(entry.name.as_os_str().as_bytes()).is_err())
+            .count();
         self.not_nfc = entries
             .iter()
             .filter(|entry| !osname::is_nfc(entry.name.as_os_str().as_bytes()))
@@ -210,6 +219,7 @@ impl PlanModel {
     pub fn rebuild_view(&mut self) {
         let mut view: Vec<usize> = (0..self.plan.rows.len()).collect();
         let rows = &self.plan.rows;
+        let desc = self.sort.desc;
         match self.sort.key {
             // Plan order is apply order.
             SortKey::Apply => {}
@@ -217,8 +227,12 @@ impl PlanModel {
                 path_bytes(&rows[*left].src).cmp(path_bytes(&rows[*right].src))
             }),
             SortKey::Status => view.sort_by(|left, right| {
-                format::status_label(rows[*left].status)
-                    .cmp(format::status_label(rows[*right].status))
+                let (left, right) = (&rows[*left], &rows[*right]);
+                format::status_rank(left.status)
+                    .cmp(&format::status_rank(right.status))
+                    .then_with(|| {
+                        format::status_label(left.status).cmp(format::status_label(right.status))
+                    })
             }),
             SortKey::After => view.sort_by(|left, right| {
                 path_bytes(&rows[*left].dst).cmp(path_bytes(&rows[*right].dst))
@@ -226,15 +240,21 @@ impl PlanModel {
             // Until the stat pass lands every key ties, which a stable sort keeps
             // in apply order. A row that could not be read sorts last.
             SortKey::Size => view.sort_by(|left, right| {
-                size_key(self.meta.get(&rows[*left].src))
-                    .cmp(&size_key(self.meta.get(&rows[*right].src)))
+                compare_meta(
+                    size_key(self.meta.get(&rows[*left].src)),
+                    size_key(self.meta.get(&rows[*right].src)),
+                    desc,
+                )
             }),
             SortKey::Mtime => view.sort_by(|left, right| {
-                time_key(self.meta.get(&rows[*left].src))
-                    .cmp(&time_key(self.meta.get(&rows[*right].src)))
+                compare_meta(
+                    time_key(self.meta.get(&rows[*left].src)),
+                    time_key(self.meta.get(&rows[*right].src)),
+                    desc,
+                )
             }),
         }
-        if self.sort.desc {
+        if desc && !self.sort.key.needs_meta() {
             view.reverse();
         }
         self.view = view;
@@ -268,7 +288,7 @@ impl PlanModel {
 mod tests {
     use std::path::PathBuf;
 
-    use renameant_core::plan::ConflictKind;
+    use renameant_core::plan::{ConflictKind, InvalidKind};
     use renameant_core::rule::{InsertRemoveOp, Rule, RuleSet, Target};
 
     use super::*;
@@ -315,7 +335,7 @@ mod tests {
     }
 
     #[test]
-    fn a_status_sort_groups_rows_by_the_label_they_show() {
+    fn a_status_sort_groups_rows_by_meaning() {
         let row = |src: &str, status: Status| PlanRow {
             src: PathBuf::from(src),
             dst: PathBuf::from(src),
@@ -327,6 +347,8 @@ mod tests {
                 rows: vec![
                     row("/d/a", Status::Ok),
                     row("/d/b", Status::Conflict(ConflictKind::TargetExists)),
+                    row("/d/c", Status::Invalid(InvalidKind::Empty)),
+                    row("/d/d", Status::Unchanged),
                 ],
             },
             ..PlanModel::default()
@@ -334,8 +356,8 @@ mod tests {
 
         model.sort = Sort { key: SortKey::Status, desc: false };
         model.rebuild_view();
-        // "match" sorts before "name is taken".
-        assert_eq!(model.view, vec![0, 1]);
+        // Invalid, then conflict, then match, then no match.
+        assert_eq!(model.view, vec![2, 1, 0, 3]);
     }
 
     #[test]
@@ -369,6 +391,12 @@ mod tests {
         model.sort = Sort { key: SortKey::Mtime, desc: false };
         model.rebuild_view();
         assert_eq!(model.view, vec![0, 2, 1, 3]);
+
+        // Descending flips the values but still puts the unreadable row and the
+        // directory last.
+        model.sort = Sort { key: SortKey::Size, desc: true };
+        model.rebuild_view();
+        assert_eq!(model.view, vec![2, 0, 1, 3]);
     }
 
     #[test]

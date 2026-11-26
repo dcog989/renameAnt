@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use egui::{Color32, TextureHandle};
+use egui::TextureHandle;
 use renameant_core::apply::{ApplyOptions, ApplyReport, Outcome};
 use renameant_core::filter::Filter;
 use renameant_core::journal::{self, RunId, Session};
@@ -45,31 +45,6 @@ const ACTION_TEXT_SIZE: f32 = 20.0;
 const OVERLAY_WIDTH: f32 = 520.0;
 /// Only used when neither XDG_CONFIG_HOME nor HOME is set.
 const FALLBACK_CONFIG: &str = "renameant-rules.json";
-
-/// Status colours for the dark theme: light enough for a near-black window.
-const OK_DARK: Color32 = Color32::from_rgb(110, 190, 120);
-const WARNING_DARK: Color32 = Color32::from_rgb(230, 165, 60);
-const DANGER_DARK: Color32 = Color32::from_rgb(222, 95, 85);
-/// The same meanings on a light window, darkened for APCA text contrast.
-const OK_LIGHT: Color32 = Color32::from_rgb(27, 94, 32);
-const WARNING_LIGHT: Color32 = Color32::from_rgb(122, 74, 0);
-const DANGER_LIGHT: Color32 = Color32::from_rgb(164, 34, 26);
-
-fn themed(ui: &egui::Ui, light: Color32, dark: Color32) -> Color32 {
-    if ui.visuals().dark_mode { dark } else { light }
-}
-
-pub(crate) fn ok(ui: &egui::Ui) -> Color32 {
-    themed(ui, OK_LIGHT, OK_DARK)
-}
-
-pub(crate) fn warning(ui: &egui::Ui) -> Color32 {
-    themed(ui, WARNING_LIGHT, WARNING_DARK)
-}
-
-pub(crate) fn danger(ui: &egui::Ui) -> Color32 {
-    themed(ui, DANGER_LIGHT, DANGER_DARK)
-}
 
 enum Overlay {
     /// The rows named in the confirmation, captured when it opened, so no
@@ -668,11 +643,11 @@ impl App {
                 1 => format!("a folder could not be read: {first}"),
                 count => format!("{count} folders could not be read; first: {first}"),
             };
-            ui.colored_label(warning(ui), text);
+            ui.colored_label(style::warning(ui), text);
         }
         if self.scan_truncated {
             ui.colored_label(
-                warning(ui),
+                style::warning(ui),
                 format!(
                     "the scan stopped at {} entries: narrow the pick or turn off Subdirectories",
                     self.model.entries.len()
@@ -680,27 +655,30 @@ impl App {
             );
         }
         if !self.model.filter.kinds.dirs && !self.model.filter.kinds.files {
-            ui.colored_label(warning(ui), "the filter keeps nothing: tick Directories or Files");
+            ui.colored_label(
+                style::warning(ui),
+                "the filter keeps nothing: tick Directories or Files",
+            );
         }
         if not_utf8 > 0 {
             ui.colored_label(
-                warning(ui),
+                style::warning(ui),
                 format!(
                     "{not_utf8} not UTF-8: regex, case, normalize and the remove rules skip them"
                 ),
             );
         }
         if not_nfc > 0 {
-            ui.colored_label(warning(ui), format!("{not_nfc} not NFC"));
+            ui.colored_label(style::warning(ui), format!("{not_nfc} not NFC"));
         }
         if let Some(error) = &self.run_error {
-            ui.colored_label(danger(ui), error.as_str());
+            ui.colored_label(style::danger(ui), error.as_str());
         }
         if let Some(error) = &self.journal_error {
-            ui.colored_label(danger(ui), error.as_str());
+            ui.colored_label(style::danger(ui), error.as_str());
         }
         if let Some(error) = &self.model.error {
-            ui.colored_label(warning(ui), format!("warning: {error}"));
+            ui.colored_label(style::warning(ui), format!("warning: {error}"));
         }
     }
 
@@ -918,19 +896,19 @@ impl eframe::App for App {
         self.persist();
 
         egui::Panel::left("renameant-rules")
-            .frame(style::panel_frame())
+            .frame(egui::Frame::new())
             .resizable(true)
             .default_size(RULES_WIDTH)
             .show(ui, |ui| self.rules_panel(ui));
         let mut journal_open = self.journal_open;
         egui::Panel::right("renameant-journal")
-            .frame(style::panel_frame())
+            .frame(egui::Frame::new())
             .resizable(true)
             .default_size(JOURNAL_WIDTH)
             .show_collapsible(ui, &mut journal_open, |ui| self.journal_panel(ui));
         self.journal_open = journal_open;
         egui::CentralPanel::default()
-            .frame(style::panel_frame())
+            .frame(egui::Frame::new())
             .show(ui, |ui| self.content_panel(ui));
         self.maybe_stat();
         self.show_overlay(&ctx);
