@@ -443,7 +443,9 @@ impl App {
                             self.scan_unreadable.len()
                         )
                     } else {
-                        format!("{count} entries")
+                        // The count is shown under the table; repeating it in the
+                        // status line reads as a second scan result.
+                        String::new()
                     };
                     self.model.set_scan(entries, index);
                     self.replan();
@@ -714,13 +716,6 @@ impl App {
                 self.model.sort = Sort::default();
                 self.model.rebuild_view();
             }
-            let text = if self.model.filter.is_inactive() {
-                format!("{} rows", self.model.view.len())
-            } else {
-                let (rows, entries) = (self.model.plan.rows.len(), self.model.entries.len());
-                format!("{rows} of {entries} entries")
-            };
-            ui.label(egui::RichText::new(text).weak());
             let clear = !self.added.is_empty();
             if ui
                 .add_enabled(clear, egui::Button::new("Clear Content"))
@@ -735,11 +730,11 @@ impl App {
 
     fn footer(&mut self, ui: &mut egui::Ui) {
         let totals = self.model.totals;
-        let (files, folders, actionable) = (totals.files, totals.folders, totals.actionable);
+        let ready = totals.actionable > 0
+            && !self.busy
+            && self.model.error.is_none()
+            && !self.scan_truncated;
         ui.horizontal(|ui| {
-            ui.label(format!("{files} files / {folders} folders to rename"));
-            let ready =
-                actionable > 0 && !self.busy && self.model.error.is_none() && !self.scan_truncated;
             if ui
                 .add_enabled(
                     ready,
@@ -754,6 +749,7 @@ impl App {
                     totals: self.model.totals,
                 });
             }
+            ui.label(format!("{} files / {} folders", totals.files, totals.folders));
         });
         if !self.status.is_empty() {
             ui.label(self.status.as_str());
@@ -804,14 +800,29 @@ impl App {
             self.top_row(ui);
             self.filter_row(ui);
             self.notices(ui);
-            let change = table::show(ui, &mut self.model);
-            if let Some(path) = change.removed {
-                // A path that came from the picked list leaves it too, so the
-                // next scan does not bring the row back.
-                self.added.retain(|added| added != &path);
-                self.model.removed.insert(path);
-                self.replan();
-            }
+            // The count reads as the table's own footer, so its line is reserved
+            // before the table takes the rest and the label lands under the
+            // table's frame, not on the panel's bottom edge.
+            let count_line =
+                ui.text_style_height(&egui::TextStyle::Body) + ui.spacing().item_spacing.y;
+            ui.scope(|ui| {
+                ui.set_max_height((ui.available_height() - count_line).max(0.0));
+                let change = table::show(ui, &mut self.model);
+                if let Some(path) = change.removed {
+                    // A path that came from the picked list leaves it too, so the
+                    // next scan does not bring the row back.
+                    self.added.retain(|added| added != &path);
+                    self.model.removed.insert(path);
+                    self.replan();
+                }
+            });
+            let (shown, scanned) = (self.model.plan.rows.len(), self.model.entries.len());
+            let text = if self.model.filter.is_inactive() {
+                format!("{shown} entries")
+            } else {
+                format!("{shown} of {scanned} entries")
+            };
+            ui.label(egui::RichText::new(text).weak());
         });
     }
 
