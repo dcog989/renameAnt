@@ -57,23 +57,27 @@ const UNCHANGED_DARK: Color32 = Color32::from_rgb(192, 192, 192);
 const UNCHANGED_LIGHT: Color32 = Color32::from_rgb(95, 99, 104);
 /// Selected text: dark on the accent, which is light enough in either theme.
 const SELECTED_TEXT: Color32 = Color32::from_rgb(43, 20, 21);
-/// The three text tiers are one colour at a named opacity: bright at 100%,
-/// dim and disabled below it, about 35 APCA Lc apart; bright clears Lc 75.
-/// A saturated link blue cannot reach 75 on near-black, so links keep their
-/// hue near 60.
-const TEXT_DARK: Color32 = Color32::WHITE;
-const TEXT_LIGHT: Color32 = Color32::from_gray(30);
-/// Dim lands near gray 198 (dark) and 121 (light).
-const DIM_ALPHA_DARK: f32 = 0.75;
-const DIM_ALPHA_LIGHT: f32 = 0.58;
-/// Disabled lands near gray 134 (dark) and 187 (light).
-const DISABLED_ALPHA_DARK: f32 = 0.47;
-const DISABLED_ALPHA_LIGHT: f32 = 0.28;
+/// The text ramp: the base colour, then every weaker tier as that colour at a
+/// named alpha.
+const DARK_BASE: Color32 = Color32::WHITE;
+const DARK_MUTED: f32 = 0.75;
+const DARK_DIM: f32 = 0.55;
+const DARK_DISABLED: f32 = 0.40;
+const LIGHT_BASE: Color32 = Color32::BLACK;
+const LIGHT_MUTED: f32 = 0.75;
+const LIGHT_DIM: f32 = 0.55;
+const LIGHT_DISABLED: f32 = 0.40;
 const LINK_DARK: Color32 = Color32::from_rgb(60, 190, 255);
 const LINK_LIGHT: Color32 = Color32::from_rgb(0, 130, 230);
 
 fn themed(ui: &Ui, light: Color32, dark: Color32) -> Color32 {
     if ui.visuals().dark_mode { dark } else { light }
+}
+
+/// A base colour at one of the ramp's alphas.
+fn alpha(color: Color32, factor: f32) -> Color32 {
+    let a = (factor * 255.0).round() as u8;
+    Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), a)
 }
 
 pub(crate) fn ok(ui: &Ui) -> Color32 {
@@ -108,23 +112,29 @@ pub fn apply(ctx: &Context) {
         style.visuals.selection.bg_fill =
             if style.visuals.dark_mode { ACCENT } else { ACCENT_LIGHT };
         style.visuals.selection.stroke = Stroke::new(FOCUS_WIDTH, SELECTED_TEXT);
-        // Text colours are the theme's, so every panel and the About page read
-        // the same and meet APCA.
-        let dark = style.visuals.dark_mode;
-        let text = if dark { TEXT_DARK } else { TEXT_LIGHT };
-        style.visuals.widgets.noninteractive.fg_stroke.color = text;
-        let dim = if dark { DIM_ALPHA_DARK } else { DIM_ALPHA_LIGHT };
-        style.visuals.weak_text_color = Some(text.gamma_multiply(dim));
-        style.visuals.hyperlink_color = if dark { LINK_DARK } else { LINK_LIGHT };
-        style.visuals.disabled_alpha =
-            if dark { DISABLED_ALPHA_DARK } else { DISABLED_ALPHA_LIGHT };
+        // The base colour is the brightest text; muted, dim and disabled are the
+        // same colour at a named alpha, so no widget invents its own.
+        let (base, muted, dim, disabled) = if style.visuals.dark_mode {
+            (DARK_BASE, DARK_MUTED, DARK_DIM, DARK_DISABLED)
+        } else {
+            (LIGHT_BASE, LIGHT_MUTED, LIGHT_DIM, LIGHT_DISABLED)
+        };
+        let muted = alpha(base, muted);
+        style.visuals.widgets.noninteractive.fg_stroke.color = muted;
+        style.visuals.widgets.inactive.fg_stroke.color = muted;
+        style.visuals.widgets.open.fg_stroke.color = muted;
+        // Active is also what `.strong()` reads, so it keeps the base colour.
+        style.visuals.widgets.active.fg_stroke.color = base;
+        style.visuals.weak_text_color = Some(alpha(base, dim));
+        style.visuals.hyperlink_color =
+            if style.visuals.dark_mode { LINK_DARK } else { LINK_LIGHT };
+        style.visuals.disabled_alpha = disabled;
         // A pressed widget fills with the accent; a hovered one takes an accent
-        // outline, while its text keeps the theme's APCA-checked colour.
+        // outline, while its text takes the base colour.
         style.visuals.widgets.active.weak_bg_fill = ACCENT;
         style.visuals.widgets.active.bg_fill = ACCENT;
         style.visuals.widgets.hovered.bg_stroke = Stroke::new(HOVER_OUTLINE_WIDTH, ACCENT);
-        let hover_text = if dark { TEXT_DARK } else { TEXT_LIGHT };
-        style.visuals.widgets.hovered.fg_stroke = Stroke::new(HOVER_STROKE_WIDTH, hover_text);
+        style.visuals.widgets.hovered.fg_stroke = Stroke::new(HOVER_STROKE_WIDTH, base);
         // Every button reads this, so a clickable control reads as one.
         style.visuals.interact_cursor = Some(CursorIcon::PointingHand);
     });

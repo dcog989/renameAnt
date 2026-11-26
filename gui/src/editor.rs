@@ -106,32 +106,25 @@ fn card(
             edit.enabled = !edit.enabled;
         }
         let checked = edit.enabled;
+        // The name is the checkbox's label, so it sits on the same gap as every
+        // other checkbox and label in the window.
         let checkbox = ui
             .scope(|ui| {
-                // The tick is the widget's foreground; the box has no text, so
-                // the accent reaches the tick alone.
+                // The tick is the widget's foreground; the name carries its own
+                // colour, so the accent reaches the tick alone.
                 if checked {
                     ui.style_mut().visuals.widgets.inactive.fg_stroke.color = crate::style::ACCENT;
                 }
-                ui.add(egui::Checkbox::without_text(&mut edit.enabled))
-            })
-            .inner;
-        crate::style::pointer(checkbox).accessible_name(name(index, "enabled"));
-        let title = ui
-            .scope(|ui| {
-                ui.style_mut().visuals.widgets.inactive.fg_stroke.color = color;
-                ui.add(
-                    egui::Button::new(
-                        RichText::new(edit.kind.label()).size(crate::style::RULE_TITLE_SIZE),
-                    )
-                    .frame(false),
-                )
+                ui.add(egui::Checkbox::new(
+                    &mut edit.enabled,
+                    RichText::new(edit.kind.label())
+                        .size(crate::style::RULE_TITLE_SIZE)
+                        .color(color),
+                ))
             })
             .inner
             .on_hover_text(toggle_text);
-        if title.clicked() {
-            edit.enabled = !edit.enabled;
-        }
+        crate::style::pointer(checkbox).accessible_name(name(index, "enabled"));
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if !edit.builtin
