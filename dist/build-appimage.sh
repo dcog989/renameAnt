@@ -57,7 +57,8 @@ VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT/Cargo.toml" | head -1)"
 export VERSION
 
 echo "== build"
-cargo build --release --locked -p renameant-gui
+cargo build --release --locked --manifest-path "$ROOT/Cargo.toml" --target-dir "$ROOT/target" \
+    -p renameant-gui
 
 echo "== stage AppDir"
 rm -rf "$APPDIR"
@@ -72,7 +73,7 @@ mkdir -p "$APPDIR/usr/lib"
 for lib in "${CLIENT_LIBS[@]}"; do
     # `awk … exit` closes the pipe, so ldconfig dies of SIGPIPE; swallow that
     # rather than let pipefail + set -e abort the build on the first library.
-    src="$(ldconfig -p 2>/dev/null | awk -v l="$lib" '$1 == l { print $NF; exit }' || true)"
+    src="$(ldconfig -p 2>/dev/null | awk -v l="$lib" '$1 == l && $2 ~ /x86-64/ { print $NF; exit }' || true)"
     if [ -n "$src" ]; then
         cp -L "$src" "$APPDIR/usr/lib/$lib"
     else
@@ -99,6 +100,8 @@ echo "$LINUXDEPLOY_SHA256  $LINUXDEPLOY" | sha256sum -c - >/dev/null ||
     die "linuxdeploy $LINUXDEPLOY_TAG digest mismatch for $ARCH: delete $LINUXDEPLOY and retry"
 
 echo "== deploy and package"
+# A version bump leaves the previous release beside the new one.
+rm -f "$OUT"/renameAnt-*.AppImage
 # linuxdeploy writes the AppImage to the current directory, so run it in OUT.
 (
     cd "$OUT"
@@ -110,4 +113,4 @@ echo "== deploy and package"
 )
 
 echo "== done"
-find "$OUT" -maxdepth 1 -name '*.AppImage' ! -name 'linuxdeploy*' -printf '%f\n'
+find "$OUT" -maxdepth 1 -name '*.AppImage' ! -name 'linuxdeploy*' -printf "$OUT/%f\n"
