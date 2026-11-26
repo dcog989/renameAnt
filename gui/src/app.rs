@@ -629,7 +629,7 @@ impl App {
                         !self.busy,
                         egui::Checkbox::new(&mut self.recursive, "Subdirectories"),
                     )
-                    .on_hover_text("Also add subdirectories"),
+                    .on_hover_text("Also include subdirectories with import"),
                 )
                 .changed()
                 {

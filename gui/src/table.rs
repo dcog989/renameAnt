@@ -52,9 +52,14 @@ pub fn show(ui: &mut egui::Ui, model: &mut PlanModel) -> Change {
     // A label left selectable senses drag, which makes it the row's topmost
     // interactive widget and leaves the row's own hover highlight unpainted.
     ui.style_mut().interaction.selectable_labels = false;
-    // Every column keeps its width, so a narrow centre panel would clip the tail
-    // of them; the horizontal scroll keeps them all reachable instead.
+    // The Modified column takes the remaining width, so a wide centre panel is
+    // filled; the rest keep their widths and the horizontal scroll keeps them
+    // reachable when the panel is narrow.
     let mut header_bottom = None;
+    // The frame and the row bands span the columns, not the whole scroll viewport,
+    // so neither leaves an unpainted strip after the last column.
+    let mut content_width = 0.0;
+    let row_gap = ui.spacing().item_spacing.y;
     let area = egui::ScrollArea::horizontal().auto_shrink([true, false]).show(ui, |ui| {
         // egui_extras draws a column's separator only when the column can be
         // dragged, so the fixed columns' separators are painted here instead.
@@ -70,7 +75,7 @@ pub fn show(ui: &mut egui::Ui, model: &mut PlanModel) -> Change {
             .column(Column::initial(PATH_WIDTH).at_least(NAME_MIN_WIDTH).clip(true))
             .column(Column::initial(NAME_WIDTH).at_least(NAME_MIN_WIDTH).clip(true))
             .column(Column::initial(SIZE_WIDTH).at_least(SIZE_MIN_WIDTH).clip(true))
-            .column(Column::auto().resizable(false))
+            .column(Column::remainder().resizable(false))
             .column(Column::exact(REMOVE_WIDTH).resizable(false))
             .header(HEADER_HEIGHT, |mut header| {
                 header.col(|ui| {
@@ -92,7 +97,6 @@ pub fn show(ui: &mut egui::Ui, model: &mut PlanModel) -> Change {
                     sort_cell(ui, model, SortKey::Mtime, "Modified", HeaderAlign::Center);
                 });
                 header.col(|ui| {
-                    fixed_edges.push(fixed_column_edge(ui));
                     cell(ui, |ui| {
                         let width = text_width(ui, "Remove");
                         center(ui, width, |ui| {
@@ -102,33 +106,42 @@ pub fn show(ui: &mut egui::Ui, model: &mut PlanModel) -> Change {
                 });
             });
         table.body(|mut body| {
-            // Grow the body's own clip by half a row gap, so the first row's
-            // band reaches into the gap above it instead of being cut short:
-            // egui_extras paints the stripes with this clip, not a cell's.
+            let spacing_x = body.ui_mut().spacing().item_spacing.x;
+            // One band per row, across every column, not one stop per cell.
+            content_width = {
+                let widths = body.widths();
+                widths.iter().sum::<f32>() + spacing_x * (widths.len() - 1) as f32
+            };
+            // Allow only the first row's band and stripe to rise into the header
+            // gap, and clip the right to the columns, not the scroll viewport,
+            // so neither bleeds past the last column.
             let spacing_y = body.ui_mut().spacing().item_spacing.y;
-            let clip = body.ui_mut().clip_rect().expand2(egui::vec2(0.0, spacing_y / 2.0));
+            let mut clip = body.ui_mut().clip_rect();
+            clip.min.y -= spacing_y / 2.0;
+            clip.max.x = (clip.left() + content_width).min(clip.max.x);
             body.ui_mut().set_clip_rect(clip);
-            // `rows` consumes the body; keep its painter for the row fills so a
-            // cell's own clip does not leave the gaps between columns unpainted.
-            let painter = body.ui_mut().painter().clone();
+            // `rows` consumes the body; keep a painter clipped to the columns so
+            // the fills span the row without bleeding past the table's edge.
+            let painter = body.ui_mut().painter().with_clip_rect(clip);
             body.rows(ROW_HEIGHT, view_len, |mut row| {
                 let at = row.index();
                 let plan_index = model.view[at];
                 let entry = &model.plan.rows[plan_index];
                 row.col(|ui| {
-                    row_cell(ui, &painter, entry.status, at, |ui| {
+                    row_fill(&painter, ui, entry.status, at, content_width);
+                    cell(ui, |ui| {
                         let label = format::status_label(entry.status);
                         ui.colored_label(status_color(ui, entry.status), label)
                             .on_hover_text(label);
                     });
                 });
                 row.col(|ui| {
-                    row_cell(ui, &painter, entry.status, at, |ui| {
+                    cell(ui, |ui| {
                         ui.add(egui::Label::new(path_text(ui, &entry.src)).truncate());
                     });
                 });
                 row.col(|ui| {
-                    row_cell(ui, &painter, entry.status, at, |ui| {
+                    cell(ui, |ui| {
                         let name = egui::RichText::new(format::file_text(&entry.dst)).strong();
                         ui.add(egui::Label::new(name).truncate());
                     });
@@ -140,25 +153,24 @@ pub fn show(ui: &mut egui::Ui, model: &mut PlanModel) -> Change {
                     .and_then(|meta| meta.mtime)
                     .map_or_else(String::new, |mtime| format::local_text(unix_seconds(mtime)));
                 row.col(|ui| {
-                    row_cell(ui, &painter, entry.status, at, |ui| {
+                    cell(ui, |ui| {
                         right(ui, |ui| {
                             ui.label(size);
                         });
                     });
                 });
                 row.col(|ui| {
-                    row_cell(ui, &painter, entry.status, at, |ui| {
+                    cell(ui, |ui| {
                         let width = text_width(ui, &modified);
                         center(ui, width, |ui| {
-                            // Extend, not wrap: wrapping inside the auto-sized
-                            // column would measure it by the wrapped width.
+                            // Extend, not wrap: the timestamp stays one line.
                             ui.add(egui::Label::new(egui::RichText::new(modified)).extend());
                         });
                     });
                 });
                 let removed_here = entry.src.clone();
                 row.col(|ui| {
-                    row_cell(ui, &painter, entry.status, at, |ui| {
+                    cell(ui, |ui| {
                         center(ui, style::REMOVE_CHIP, |ui| {
                             // The row's one action, focusable and announced.
                             let chip = style::remove(
@@ -187,14 +199,19 @@ pub fn show(ui: &mut egui::Ui, model: &mut PlanModel) -> Change {
         }
     });
     // The frame and the rule under the titles are painted outside the scroll
-    // area so they stay at the table's edges when the columns scroll. The frame
-    // encloses the titles too, and the rule closes the header row, so the
-    // titles are centred in the band it bounds.
+    // area so they stay at the table's edges when the columns scroll. Both fit
+    // the columns, so the frame never encloses an empty run. The rule sits half a
+    // row gap into the header-body gap, level with the first row band's top.
     if let Some(header_bottom) = header_bottom {
         let stroke = ui.visuals().widgets.noninteractive.bg_stroke;
-        let rect = area.inner_rect;
+        let viewport = area.inner_rect;
+        let width = content_width.min(viewport.width());
+        let rect = egui::Rect::from_min_size(viewport.min, egui::vec2(width, viewport.height()));
+        // The rule stops at the frame's side lines, which are drawn over its
+        // ends so it cannot poke out of the table.
+        ui.painter()
+            .hline(rect.x_range().shrink(stroke.width), header_bottom + row_gap / 2.0, stroke);
         ui.painter().rect_stroke(rect, egui::CornerRadius::ZERO, stroke, egui::StrokeKind::Inside);
-        ui.painter().hline(rect.x_range(), header_bottom, stroke);
     }
     Change { removed }
 }
@@ -212,35 +229,37 @@ fn path_text(ui: &egui::Ui, path: &Path) -> egui::text::LayoutJob {
     job
 }
 
-/// One body cell: its row's status tint first, then its content.
-fn row_cell<R>(
-    ui: &mut egui::Ui,
+/// Paints a row's status tint across every column, with the table body's painter
+/// so it spans the whole row instead of one cell. Half a row gap is added on each
+/// side so it meets the row above and below; two strengths alternate.
+fn row_fill(
     painter: &egui::Painter,
+    ui: &egui::Ui,
     status: Status,
     row_index: usize,
-    content: impl FnOnce(&mut egui::Ui) -> R,
-) -> R {
-    row_fill(painter, ui, status, row_index);
-    cell(ui, content)
-}
-
-/// Paints a row's status tint on one of its cells, with the table body's painter
-/// so the fill is not clipped to the cell. The rect is grown by half the cell
-/// spacing, as egui_extras grows its stripe, so the cells' fills meet without
-/// seams and the band stays centred on its row. Two strengths alternate.
-fn row_fill(painter: &egui::Painter, ui: &egui::Ui, status: Status, row_index: usize) {
-    // "no match" is the default, so it keeps the table's plain stripes.
-    if status == Status::Unchanged {
-        return;
-    }
-    let color = status_color(ui, status);
+    content_width: f32,
+) {
+    // The band is the raw palette hue, not the tinted text colour. "no match" is
+    // the default, so it keeps the table's plain stripes.
+    let hue = match status {
+        Status::Ok => style::OK,
+        Status::Conflict(_) => style::ACCENT,
+        Status::Invalid(_) => style::DANGER,
+        Status::Unchanged => return,
+    };
+    let cell = ui.max_rect();
+    let half = 0.5 * ui.spacing().item_spacing.y;
+    let rect = egui::Rect::from_x_y_ranges(
+        cell.left()..=(cell.left() + content_width),
+        (cell.top() - half)..=(cell.bottom() + half),
+    )
+    .round_ui();
     let fill = Color32::from_rgba_unmultiplied(
-        color.r(),
-        color.g(),
-        color.b(),
+        hue.r(),
+        hue.g(),
+        hue.b(),
         ROW_FILL_ALPHA[row_index % 2],
     );
-    let rect = ui.max_rect().expand2(0.5 * ui.spacing().item_spacing).round_ui();
     painter.rect_filled(rect, egui::CornerRadius::ZERO, fill);
 }
 

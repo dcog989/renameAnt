@@ -1,4 +1,4 @@
-//! The one place the window's look is defined: spacing, the accent, and the
+//! The one place the window's look is defined: the palette, spacing, and the
 //! two things that are always monospace (panel titles and text fields).
 //!
 //! egui's defaults are tight (3 pt between rows, 2 pt of button padding), and
@@ -32,10 +32,10 @@ pub const RULE_TITLE_SIZE: f32 = 16.0;
 pub const ACTION_TEXT_SIZE: f32 = 20.0;
 /// Border width of every rule card, on or off, so toggling cannot resize it.
 const CARD_BORDER_WIDTH: f32 = 1.5;
-/// The window's accent: orange (#d87129). Selection, links and the panel title
-/// bars are all tinted from it.
-pub const ACCENT: Color32 = Color32::from_rgb(216, 113, 41);
-/// The outline on a focused or selected widget: the accent lifted for contrast.
+/// The window's accent, palette hue 1. Selection, focus and a rule that is on
+/// are all tinted from it.
+pub const ACCENT: Color32 = Color32::from_rgb(0xd8, 0x71, 0x29);
+/// The light window's selection fill: the accent lifted so selected text reads.
 pub const ACCENT_LIGHT: Color32 = Color32::from_rgb(240, 195, 150);
 /// The accent lifted further and pushed to full chroma, for a rule that is on.
 pub const ACCENT_BRIGHT: Color32 = Color32::from_rgb(255, 145, 65);
@@ -44,17 +44,16 @@ const FOCUS_WIDTH: f32 = 1.0;
 /// Width of the line under a title bar.
 const HEADER_LINE_WIDTH: f32 = 1.0;
 
-/// Status colours for the dark theme: light enough for a near-black window.
-const OK_DARK: Color32 = Color32::from_rgb(150, 224, 160);
-const WARNING_DARK: Color32 = Color32::from_rgb(255, 205, 120);
-const DANGER_DARK: Color32 = Color32::from_rgb(255, 185, 175);
-/// The same meanings on a light window, darkened for APCA text contrast.
-const OK_LIGHT: Color32 = Color32::from_rgb(27, 94, 32);
-const WARNING_LIGHT: Color32 = Color32::from_rgb(122, 74, 0);
-const DANGER_LIGHT: Color32 = Color32::from_rgb(164, 34, 26);
-/// "no match" is still a status the user reads, so it gets a theme pair too.
-const UNCHANGED_DARK: Color32 = Color32::from_rgb(192, 192, 192);
-const UNCHANGED_LIGHT: Color32 = Color32::from_rgb(95, 99, 104);
+/// Palette hue 2: danger. `role` tints it for text; fills take it raw.
+pub(crate) const DANGER: Color32 = Color32::from_rgb(0xdf, 0x65, 0x68);
+/// Palette hue 3: ok.
+pub(crate) const OK: Color32 = Color32::from_rgb(0x57, 0xa7, 0x4a);
+/// Palette hue 4: links.
+const LINK: Color32 = Color32::from_rgb(0x00, 0x9e, 0xd3);
+/// How far a role's hue moves toward the page's opposite for readable text:
+/// toward white on the dark window, toward black on the light one. The raw
+/// swatches sit near Lc 50 as text, so they are never used directly.
+const ROLE_TINT: f32 = 0.55;
 /// Selected text: dark on the accent, which is light enough in either theme.
 const SELECTED_TEXT: Color32 = Color32::from_rgb(43, 20, 21);
 /// The text ramp: the base colour, then every weaker tier as that colour at a
@@ -67,11 +66,11 @@ const LIGHT_BASE: Color32 = Color32::BLACK;
 const LIGHT_MUTED: f32 = 0.75;
 const LIGHT_DIM: f32 = 0.55;
 const LIGHT_DISABLED: f32 = 0.40;
-const LINK_DARK: Color32 = Color32::from_rgb(60, 190, 255);
-const LINK_LIGHT: Color32 = Color32::from_rgb(0, 130, 230);
 
-fn themed(ui: &Ui, light: Color32, dark: Color32) -> Color32 {
-    if ui.visuals().dark_mode { dark } else { light }
+/// A palette hue moved toward the theme's page for text contrast.
+fn role(dark: bool, hue: Color32) -> Color32 {
+    let toward = if dark { Color32::WHITE } else { Color32::BLACK };
+    hue.lerp_to_gamma(toward, ROLE_TINT)
 }
 
 /// A base colour at one of the ramp's alphas.
@@ -81,19 +80,20 @@ fn alpha(color: Color32, factor: f32) -> Color32 {
 }
 
 pub(crate) fn ok(ui: &Ui) -> Color32 {
-    themed(ui, OK_LIGHT, OK_DARK)
+    role(ui.visuals().dark_mode, OK)
 }
 
 pub(crate) fn warning(ui: &Ui) -> Color32 {
-    themed(ui, WARNING_LIGHT, WARNING_DARK)
+    role(ui.visuals().dark_mode, ACCENT)
 }
 
 pub(crate) fn danger(ui: &Ui) -> Color32 {
-    themed(ui, DANGER_LIGHT, DANGER_DARK)
+    role(ui.visuals().dark_mode, DANGER)
 }
 
+/// "No match" is still a status the user reads, so it keeps the normal text tier.
 pub(crate) fn unchanged(ui: &Ui) -> Color32 {
-    themed(ui, UNCHANGED_LIGHT, UNCHANGED_DARK)
+    ui.visuals().text_color()
 }
 
 /// Width of the outline on a hovered widget.
@@ -119,16 +119,17 @@ pub fn apply(ctx: &Context) {
         } else {
             (LIGHT_BASE, LIGHT_MUTED, LIGHT_DIM, LIGHT_DISABLED)
         };
-        let muted = alpha(base, muted);
-        style.visuals.widgets.noninteractive.fg_stroke.color = muted;
-        style.visuals.widgets.inactive.fg_stroke.color = muted;
-        style.visuals.widgets.open.fg_stroke.color = muted;
+        let muted_color = alpha(base, muted);
+        style.visuals.widgets.noninteractive.fg_stroke.color = muted_color;
+        style.visuals.widgets.inactive.fg_stroke.color = muted_color;
+        style.visuals.widgets.open.fg_stroke.color = muted_color;
         // Active is also what `.strong()` reads, so it keeps the base colour.
         style.visuals.widgets.active.fg_stroke.color = base;
         style.visuals.weak_text_color = Some(alpha(base, dim));
-        style.visuals.hyperlink_color =
-            if style.visuals.dark_mode { LINK_DARK } else { LINK_LIGHT };
-        style.visuals.disabled_alpha = disabled;
+        style.visuals.hyperlink_color = role(style.visuals.dark_mode, LINK);
+        // egui multiplies `disabled_alpha` into the already-muted text colour,
+        // so divide the muted step out to land on the disabled tier's own alpha.
+        style.visuals.disabled_alpha = disabled / muted;
         // A pressed widget fills with the accent; a hovered one takes an accent
         // outline, while its text takes the base colour.
         style.visuals.widgets.active.weak_bg_fill = ACCENT;
@@ -150,17 +151,28 @@ pub fn group_frame(style: &Style) -> Frame {
     Frame::group(style).inner_margin(style.spacing.window_margin)
 }
 
+/// The accent a rule card's border takes when the rule is on: the bright tint
+/// on the dark window, the plain accent on the light one.
+fn card_border(ui: &Ui) -> Color32 {
+    if ui.visuals().dark_mode { ACCENT_BRIGHT } else { ACCENT }
+}
+
+/// The same accent as text: a readable shade on the light window.
+fn card_accent(ui: &Ui) -> Color32 {
+    if ui.visuals().dark_mode { ACCENT_BRIGHT } else { role(false, ACCENT) }
+}
+
 /// A rule card: an accent border when the rule is on, the plain group border
 /// when it is off.
 pub fn card_frame(ui: &Ui, enabled: bool) -> Frame {
     let frame = group_frame(ui.style());
-    let color = if enabled { ACCENT_BRIGHT } else { frame.stroke.color };
+    let color = if enabled { card_border(ui) } else { frame.stroke.color };
     frame.stroke(Stroke::new(CARD_BORDER_WIDTH, color))
 }
 
 /// A rule card's icon and title: accent when the rule is on, weak when it is off.
 pub fn card_text(ui: &Ui, enabled: bool) -> Color32 {
-    if enabled { ACCENT_BRIGHT } else { ui.visuals().weak_text_color() }
+    if enabled { card_accent(ui) } else { ui.visuals().weak_text_color() }
 }
 
 /// A text field: monospace, so every field reads as one and no call site
@@ -203,9 +215,9 @@ pub fn pointer(response: Response) -> Response {
     response.on_hover_cursor(CursorIcon::PointingHand)
 }
 
-/// The remove glyph's hover chip: #873731, so a destructive control is
-/// unmistakable.
-const REMOVE_HOVER: Color32 = Color32::from_rgb(0x87, 0x37, 0x31);
+/// How far the danger hue is darkened for the remove glyph's hover chip, so a
+/// destructive control is unmistakable.
+const REMOVE_HOVER_SHADE: f32 = 0.55;
 /// The chip hugs its glyph rather than its cell, so it fits a table row or a
 /// journal line.
 pub const REMOVE_CHIP: f32 = 18.0;
@@ -223,7 +235,11 @@ pub fn remove(ui: &mut Ui, name: &str) -> Response {
     // three chips makes any hover or click apply to all of them.
     let chip = ui.interact(rect, ui.unique_id().with("remove"), egui::Sense::click());
     if chip.hovered() {
-        ui.painter().rect_filled(rect, egui::CornerRadius::same(REMOVE_CHIP_CORNER), REMOVE_HOVER);
+        ui.painter().rect_filled(
+            rect,
+            egui::CornerRadius::same(REMOVE_CHIP_CORNER),
+            DANGER.gamma_multiply(REMOVE_HOVER_SHADE),
+        );
     }
     let color = if chip.hovered() {
         Color32::WHITE
@@ -253,7 +269,7 @@ pub fn panel_heading(ui: &mut Ui, title: &str) {
     };
     let bar = Frame::new().fill(fill).inner_margin(HEADER_PADDING).show(ui, |ui| {
         ui.set_min_width(ui.available_width());
-        ui.heading(RichText::new(title).family(FontFamily::Monospace));
+        ui.heading(RichText::new(title).family(FontFamily::Monospace).strong());
     });
     let rect = bar.response.rect;
     ui.painter().hline(rect.x_range(), rect.bottom(), Stroke::new(HEADER_LINE_WIDTH, line));
