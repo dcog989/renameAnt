@@ -2,7 +2,7 @@
 
 Linux bulk rename utility: a minimal GUI for fast and safe renaming of files and directories, with selectable rules, preview and undo journal.
 
-<!-- screenshots -->
+![screenshot 1](assets/screen-1.webp)
 
 ## Features
 
