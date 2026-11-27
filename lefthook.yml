@@ -1,0 +1,19 @@
+commit-msg:
+  commands:
+    conventional:
+      run: just commit-check {1}
+
+pre-commit:
+  parallel: true
+  commands:
+    fmt:
+      glob: "*.{rs,toml,lock}"
+      run: just format-check
+    clippy:
+      glob: "*.{rs,toml,lock}"
+      run: just lint
+
+pre-push:
+  commands:
+    test:
+      run: just test

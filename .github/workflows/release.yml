@@ -1,0 +1,74 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  appimage:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # cog tags what it just bumped, but a hand-made tag must not publish an
+      # AppImage whose filename carries a different version.
+      - name: Verify the tag matches the crate version
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "tag $GITHUB_REF_NAME does not match Cargo.toml version $version" >&2
+            exit 1
+          fi
+      # rust-toolchain.toml pins the toolchain and its components; the runner's
+      # rustup installs both on the first cargo invocation.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: rust-release-v1
+          cache-targets: false
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
+        with:
+          tool: just
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libwayland-dev libxkbcommon-dev librsvg2-bin
+      # A tag must not publish code the tests reject.
+      - name: Check
+        run: just check
+      - name: Build AppImage
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: just package
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
+        with:
+          subject-path: dist/out/renameAnt-*.AppImage
+      # The release body is the version's own CHANGELOG.md section, not GitHub's
+      # commit list, so it reads the same as the file shipped as an asset.
+      - name: Extract changelog section
+        run: |
+          awk -v version="${GITHUB_REF_NAME}" '
+            $0 ~ "^## " version "([[:space:]]|$)" { found = 1; next }
+            found && /^## / { exit }
+            found && !/^- - -$/ { print }
+          ' CHANGELOG.md > release-body.md
+          if [ ! -s release-body.md ]; then
+            echo "No CHANGELOG.md section for ${GITHUB_REF_NAME}" >&2
+            exit 1
+          fi
+      # Idempotent: a re-run updates the release instead of failing on it.
+      - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
+        with:
+          body_path: release-body.md
+          files: |
+            dist/out/renameAnt-*.AppImage
+            CHANGELOG.md

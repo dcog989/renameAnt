@@ -45,3 +45,11 @@ clean:
 # Refresh dependencies to the latest allowed versions.
 update:
     cargo update
+
+# Bump the version from conventional commits, write the changelog and tag it.
+release:
+    cog bump --auto
+
+# Verify a commit message file, as the commit-msg hook passes it.
+commit-check file *args:
+    cog verify --file {{file}} {{args}}

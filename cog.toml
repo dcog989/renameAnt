@@ -1,0 +1,15 @@
+tag_prefix = "v"
+branch_whitelist = ["main"]
+ignore_merge_commits = true
+
+pre_bump_hooks = [
+    # The bump commit is made by libgit2, which skips the git hooks, so verify
+    # here what the tag workflow will run after the tag is pushed.
+    "just check",
+    "cargo set-version --workspace {{version}}",
+]
+
+post_bump_hooks = [
+    "git push",
+    "git push origin {{version_tag}}",
+]
