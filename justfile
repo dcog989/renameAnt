@@ -34,9 +34,9 @@ install: build
 run:
     cargo run -p renameant-gui
 
-# AppImage into dist/out.
+# AppImage, .deb and .rpm into dist/out and target/.
 package:
-    bash ./dist/build-appimage.sh
+    bash ./packaging/build.sh
 
 # Remove build artifacts.
 clean:

@@ -67,13 +67,13 @@ jobs:
           shared-key: rust-v1
       - uses: taiki-e/install-action@fe3acb53a98b62c772db35de75ce0e4595e7ca8c # v2
         with:
-          tool: just
+          tool: just,cargo-deb,cargo-generate-rpm
       - name: Install build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            pkg-config libwayland-dev libxkbcommon-dev librsvg2-bin
-      - name: Build AppImage
+            pkg-config libwayland-dev libxkbcommon-dev librsvg2-bin zstd
+      - name: Build packages
         env:
           APPIMAGE_EXTRACT_AND_RUN: "1"
         run: just package

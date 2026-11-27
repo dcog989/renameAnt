@@ -7,6 +7,45 @@ description = "renameAnt desktop app: rule pipeline, before/after preview, apply
 repository.workspace = true
 license.workspace = true
 
+[package.metadata.deb]
+name = "renameant"
+maintainer = "dcog989"
+copyright = "2026, dcog989"
+license-file = ["../LICENSE"]
+extended-description = "Bulk rename files and directories with an ordered rule pipeline, a before/after preview, and an undo journal."
+section = "utils"
+priority = "optional"
+depends = "$auto, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libx11-6, libxcursor1, libxi6, libxrandr2, libgl1, libegl1"
+recommends = "xdg-desktop-portal"
+assets = [
+    ["target/release/renameant-gui", "usr/bin/", "755"],
+    ["../dist/renameant.desktop", "usr/share/applications/", "644"],
+    ["../assets/logo.svg", "usr/share/icons/hicolor/scalable/apps/renameant.svg", "644"],
+    ["../target/packaging/renameant-256.png", "usr/share/icons/hicolor/256x256/apps/renameant.png", "644"],
+]
+
+[package.metadata.generate-rpm]
+name = "renameant"
+assets = [
+    { source = "target/release/renameant-gui", dest = "/usr/bin/renameant-gui", mode = "755" },
+    { source = "../dist/renameant.desktop", dest = "/usr/share/applications/renameant.desktop", mode = "644" },
+    { source = "../assets/logo.svg", dest = "/usr/share/icons/hicolor/scalable/apps/renameant.svg", mode = "644" },
+    { source = "../target/packaging/renameant-256.png", dest = "/usr/share/icons/hicolor/256x256/apps/renameant.png", mode = "644" },
+]
+
+[package.metadata.generate-rpm.requires]
+"libEGL.so.1()(64bit)" = "*"
+"libX11.so.6()(64bit)" = "*"
+"libXcursor.so.1()(64bit)" = "*"
+"libXi.so.6()(64bit)" = "*"
+"libXrandr.so.2()(64bit)" = "*"
+"libwayland-client.so.0()(64bit)" = "*"
+"libxkbcommon.so.0()(64bit)" = "*"
+"libxkbcommon-x11.so.0()(64bit)" = "*"
+
+[package.metadata.generate-rpm.recommends]
+"xdg-desktop-portal" = "*"
+
 [[bin]]
 name = "renameant-gui"
 path = "src/main.rs"

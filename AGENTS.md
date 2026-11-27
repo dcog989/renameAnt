@@ -4,7 +4,7 @@
 
 - Name: renameAnt
 - Description: Bulk renamer for files and directories on Linux. An ordered rule pipeline produces a preview; renaming is dry-run by default, never overwrites a target, and is undoable from an append-only journal.
-- Tech: Rust — pure-logic `core` crate, `eframe`/`egui` GUI. Shipped as a single AppImage (linuxdeploy).
+- Tech: Rust — pure-logic `core` crate, `eframe`/`egui` GUI. Shipped as an AppImage (linuxdeploy), `.deb`, `.rpm` and `.tar.zst`.
 
 ### Key Files
 

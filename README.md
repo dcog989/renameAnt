@@ -29,12 +29,15 @@ Linux bulk rename utility: fast and safe renaming of files and directories, with
 
 [Download the latest release](https://github.com/dcog989/renameAnt/releases/latest):
 
-| Platform | Format   | Install                                                   |
-| -------- | -------- | --------------------------------------------------------- |
-| Linux    | AppImage | `chmod +x renameAnt-*.AppImage && ./renameAnt-*.AppImage` |
+| Platform                 | Format     | Install                                                               |
+| ------------------------ | ---------- | --------------------------------------------------------------------- |
+| Arch / CachyOS           | `.tar.zst` | `tar --zstd -xf renameant-*.tar.zst && sudo ./renameant-*/install.sh` |
+| Debian / Ubuntu          | `.deb`     | `sudo apt install ./renameant_*.deb`                                  |
+| Fedora / RHEL / openSUSE | `.rpm`     | `sudo dnf install ./renameant-*.rpm`                                  |
+| Linux                    | AppImage   | `chmod +x renameAnt-*.AppImage && ./renameAnt-*.AppImage`             |
 
 > [!NOTE]
-> The AppImage adds itself to the application menu, installs its icon, and repoints the entry when you move or rename it.
+> The `.deb`, `.rpm` and tarball install `renameant-gui` to `/usr/bin` with a menu entry and icon. The AppImage adds itself to the application menu, installs its icon, and repoints the entry when you move or rename it.
 
 ## GUI
 
@@ -49,17 +52,28 @@ Linux bulk rename utility: fast and safe renaming of files and directories, with
 
 ## Technical
 
-### Build
+### Requirements
 
-Requires Rust 1.100+ and `rsvg-convert`.
+Rust 1.100+, `just`, `rsvg-convert`, `curl` and `zstd`. Building the packages also needs `cargo-deb` and `cargo-generate-rpm`.
+
+Releases and the git hooks need `cog` (cocogitto), `cargo-edit` (`cargo set-version`) and `lefthook`:
 
 ```sh
-just check          # clippy, formatting check, tests
+cargo install cocogitto cargo-edit
+lefthook install   # commit-msg, pre-commit and pre-push hooks
+```
+
+### Build
+
+```sh
+just                # verify the repo: clippy, formatting check and tests
 just build          # target/release/renameant-gui
+just check          # lint, format check and tests, as CI runs them
 just install        # release build into ~/.local (binary, menu entry, icon)
-just package        # AppImage into dist/out; prints its path
-just run            # Debug build and run of the GUI.
-just update         # Refresh dependencies to the latest allowed versions.
+just package        # AppImage, .deb, .rpm and .tar.zst into dist/out and target/
+just release        # bump from conventional commits, write the changelog, tag and push
+just run            # debug build and run of the GUI
+just update         # refresh dependencies to the latest allowed versions
 ```
 
 ## License
