@@ -2,6 +2,14 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.2.0 - 2026-11-27
+#### Build system
+- ship AppImage, deb, rpm and tarball - (b48cd65) - dcog989
+#### Miscellaneous Chores
+- (**deps**) bump taiki-e/install-action from 2.90.3 to 2.90.8 - (66182f6) - dependabot[bot]
+
+- - -
+
 ## v0.1.0 - 2026-11-27
 #### Features
 - (**build**) add user-level install recipe - (de58767) - dcog989
