@@ -129,7 +129,8 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    /// `picked` is what a file manager passed on the command line.
+    pub fn new(cc: &eframe::CreationContext<'_>, picked: Vec<PathBuf>) -> Self {
         style::apply(&cc.egui_ctx);
         // The saved level is not known until the config is read; the default
         // still lets a read failure reach the log.
@@ -204,6 +205,14 @@ impl App {
         // Pruning and listing the journal read the whole file; keep them off
         // the first frame.
         app.dispatch(Job::LoadJournal(app.journal.clone()));
+        if !picked.is_empty() {
+            if let [folder] = picked.as_slice()
+                && folder.is_dir()
+            {
+                app.dir_field = folder.display().to_string();
+            }
+            app.add(picked);
+        }
         app
     }
 

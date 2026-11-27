@@ -97,7 +97,8 @@ fn is_current(content: &str) -> bool {
 }
 
 fn entry(path: &str, appimage: bool) -> String {
-    let exec = exec_quote(path);
+    // `%F` is where a file manager puts the picked files and folders.
+    let exec = format!("{} %F", exec_quote(path));
     let mut entry = String::new();
     for line in DESKTOP_TEMPLATE.lines() {
         if line.starts_with("Exec=") {
@@ -187,7 +188,7 @@ mod tests {
     #[test]
     fn appimage_entry_registers_the_running_file() {
         let entry = entry_for("/home/user/Apps/renameAnt 2.AppImage");
-        assert!(entry.contains("Exec=\"/home/user/Apps/renameAnt 2.AppImage\"\n"), "{entry}");
+        assert!(entry.contains("Exec=\"/home/user/Apps/renameAnt 2.AppImage\" %F\n"), "{entry}");
         assert!(
             entry.contains(&format!("{MARKER}/home/user/Apps/renameAnt 2.AppImage\n")),
             "{entry}"
@@ -201,7 +202,7 @@ mod tests {
     #[test]
     fn dev_entry_is_hidden_and_points_at_the_binary() {
         let entry = entry("/repo/target/debug/renameant-gui", false);
-        assert!(entry.contains("Exec=\"/repo/target/debug/renameant-gui\"\n"), "{entry}");
+        assert!(entry.contains("Exec=\"/repo/target/debug/renameant-gui\" %F\n"), "{entry}");
         assert!(entry.contains("NoDisplay=true\n"), "{entry}");
     }
 

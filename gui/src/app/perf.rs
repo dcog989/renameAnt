@@ -60,7 +60,7 @@ fn perf_frames_over_100k_rows() {
     let mut harness = Harness::builder()
         .with_size(egui::vec2(1100.0, 720.0))
         .allow_missing_glyphs()
-        .build_eframe(|cc| App::new(cc));
+        .build_eframe(|cc| App::new(cc, Vec::new()));
 
     // Nothing is picked at startup, so nothing lands on the model after the
     // synthetic scan replaces what the window holds.

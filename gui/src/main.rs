@@ -17,12 +17,16 @@ mod style;
 mod table;
 mod worker;
 
+use std::path::PathBuf;
+
 use egui::ViewportBuilder;
 
 /// The panes fit a narrow screen; the table's columns share what the centre has.
 const WINDOW_SIZE: [f32; 2] = [1200.0, 720.0];
 
 fn main() -> eframe::Result {
+    // A file manager's Open With passes the picked files and folders here.
+    let picked: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
     // One window: two instances would overwrite each other's rule list, and the
     // journal is easier to reason about with one writer.
     let journal = match renameant_core::journal::default_path() {
@@ -52,7 +56,11 @@ fn main() -> eframe::Result {
         renderer: eframe::Renderer::Glow,
         ..Default::default()
     };
-    eframe::run_native("renameAnt", options, Box::new(|cc| Ok(Box::new(app::App::new(cc)))))
+    eframe::run_native(
+        "renameAnt",
+        options,
+        Box::new(move |cc| Ok(Box::new(app::App::new(cc, picked)))),
+    )
 }
 
 /// Shows a startup problem and exits without opening a window.

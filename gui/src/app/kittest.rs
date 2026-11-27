@@ -117,7 +117,7 @@ fn the_window_scans_plans_applies_and_undoes() {
         // The default accessibility check stays on: every input the window draws
         // is named, so an unnamed one fails the test.
         .allow_missing_glyphs()
-        .build_eframe(|cc| App::new(cc));
+        .build_eframe(|cc| App::new(cc, Vec::new()));
 
     // The window starts with nothing picked, so it is pointed at the fixture
     // before the first scan runs.
@@ -217,7 +217,7 @@ fn a_picked_path_follows_only_a_rename_that_happened() {
     let mut harness = Harness::builder()
         .with_size(egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT))
         .allow_missing_glyphs()
-        .build_eframe(|cc| App::new(cc));
+        .build_eframe(|cc| App::new(cc, Vec::new()));
     harness.step();
 
     let app = harness.state_mut();
@@ -266,7 +266,7 @@ fn a_scan_that_lands_after_clear_content_is_dropped() {
     let mut harness = Harness::builder()
         .with_size(egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT))
         .allow_missing_glyphs()
-        .build_eframe(|cc| App::new(cc));
+        .build_eframe(|cc| App::new(cc, Vec::new()));
     pump_until(&mut harness, "the first frame", |app| !app.busy);
 
     harness.state_mut().added = vec![target];
@@ -297,7 +297,7 @@ fn a_failed_run_and_an_unreadable_journal_stay_on_screen() {
     let mut harness = Harness::builder()
         .with_size(egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT))
         .allow_missing_glyphs()
-        .build_eframe(|cc| App::new(cc));
+        .build_eframe(|cc| App::new(cc, Vec::new()));
     pump_until(&mut harness, "the first frame", |app| !app.busy);
 
     let session =
@@ -350,7 +350,7 @@ fn a_stat_pass_for_the_old_plan_is_retried() {
     let mut harness = Harness::builder()
         .with_size(egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT))
         .allow_missing_glyphs()
-        .build_eframe(|cc| App::new(cc));
+        .build_eframe(|cc| App::new(cc, Vec::new()));
     pump_until(&mut harness, "the first frame", |app| !app.busy);
 
     let entry = |name: &str| Entry {
@@ -399,7 +399,7 @@ fn a_stat_pass_for_other_paths_is_dropped_even_at_the_same_count() {
     let mut harness = Harness::builder()
         .with_size(egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT))
         .allow_missing_glyphs()
-        .build_eframe(|cc| App::new(cc));
+        .build_eframe(|cc| App::new(cc, Vec::new()));
     harness.step();
 
     let entry = |name: &str| Entry {
@@ -451,7 +451,7 @@ fn a_pending_replan_waits_for_the_modal_to_close() {
     let mut harness = Harness::builder()
         .with_size(egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT))
         .allow_missing_glyphs()
-        .build_eframe(|cc| App::new(cc));
+        .build_eframe(|cc| App::new(cc, Vec::new()));
     pump_until(&mut harness, "the first frame", |app| !app.busy);
 
     let entry = Entry { path: "/x/a".into(), name: "a".into(), kind: Kind::File };
